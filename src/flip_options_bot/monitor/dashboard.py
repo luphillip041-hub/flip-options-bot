@@ -115,11 +115,31 @@ def main():
     else:
         st.info("No risk state yet.")
 
-    # ===== Section 3: Journal =====
+    # ===== Section 3: Journal — positions =====
     st.header("Journal — positions")
     positions = _read_positions(run_dir / "journal.db")
     if not positions.empty:
+        # Color-code by state
+        def _state_color(s: str) -> str:
+            return {
+                "open": "🟢",
+                "partial": "🟡",
+                "closed": "⚪",
+            }.get(s, "❓")
+
+        positions["status"] = positions["state"].apply(_state_color)
         st.dataframe(positions, use_container_width=True)
+
+        # Summary stats
+        n_open = (positions["state"] == "open").sum()
+        n_partial = (positions["state"] == "partial").sum()
+        n_closed = (positions["state"] == "closed").sum()
+        realized = positions[positions["state"] == "closed"]["realized_pnl"].sum()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Open", n_open)
+        c2.metric("Partial", n_partial)
+        c3.metric("Closed", n_closed)
+        c4.metric("Realized P&L (closed)", f"${realized:+.2f}")
     else:
         st.info("No positions recorded yet.")
 

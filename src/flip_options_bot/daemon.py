@@ -15,13 +15,15 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
 from .broker import BrokerClient
 from .config import Settings, get_settings
-from .execution import Executor
+from .execution import Closer, Executor
 from .journal import Journal
+from .monitor.position_monitor import PositionMonitor
 from .risk import RiskEngine
 from .signal import FunnelRecorder
 from .signal.scanner import Scanner
@@ -67,6 +69,7 @@ def run_once(
     funnel: FunnelRecorder,
     scanner: Scanner,
     executor: Executor,
+    monitor: PositionMonitor,
     watchlist: list[str],
     reconcile_only: bool = False,
 ) -> dict:
@@ -147,6 +150,11 @@ def main() -> int:
         help="Just reconcile fills from the broker, no scan",
     )
     parser.add_argument(
+        "--record-day",
+        action="store_true",
+        help="Mark today as a paper market day in the observation harness (cron-only)",
+    )
+    parser.add_argument(
         "--watchlist",
         type=str,
         default=os.environ.get("FOB_WATCHLIST", ",".join(DEFAULT_WATCHLIST)),
@@ -194,6 +202,8 @@ def main() -> int:
     funnel = FunnelRecorder(settings.run_dir)
     scanner = Scanner(settings, broker, funnel)
     executor = Executor(settings, broker, journal, risk)
+    closer = Closer(settings, broker, journal, risk)
+    monitor = PositionMonitor(settings, broker, journal, risk, closer)
 
     watchlist = [s.strip() for s in args.watchlist.split(",") if s.strip()]
     log.info("watchlist: %s", watchlist)
@@ -207,15 +217,47 @@ def main() -> int:
             funnel=funnel,
             scanner=scanner,
             executor=executor,
+            monitor=monitor,
             watchlist=watchlist,
             reconcile_only=args.reconcile_only,
         )
         write_heartbeat(settings, status)
         return 0
 
-    log.info("entering main loop, scan_interval=%ds", settings.scan_interval_s)
+    if args.record_day:
+        from .observation import ObservationHarness
+
+        harness = ObservationHarness(settings.run_dir)
+        recorded = harness.record_market_day()
+        gate = harness.promotion_gate(settings.run_dir / "journal.db")
+        log.info(
+            "record-day: recorded=%s, days=%d/%d, eligible=%s reason=%s",
+            recorded, gate.market_days_recorded, gate.min_market_days,
+            gate.eligible, gate.reason,
+        )
+        print(harness.render_digest(settings.run_dir / "journal.db"))
+        return 0
+
+    # Spawn the position monitor in a separate thread. The monitor runs on
+    # its own interval (`position_monitor_interval_s`) so the scan loop is
+    # not blocked by per-second mark polls. The monitor is read-mostly — it
+    # only mutates state via Closer.flatten_position() (which is idempotent
+    # on client_order_id) and reconcile_fills() (also idempotent).
+    stop_event = threading.Event()
+    monitor_thread = threading.Thread(
+        target=_monitor_loop,
+        args=(settings, risk, monitor, stop_event),
+        name="position-monitor",
+        daemon=True,
+    )
+    monitor_thread.start()
+
+    log.info(
+        "entering main loop, scan_interval=%ds, monitor_interval=%ds",
+        settings.scan_interval_s, settings.position_monitor_interval_s,
+    )
     try:
-        while True:
+        while not stop_event.is_set():
             status = run_once(
                 settings=settings,
                 broker=broker,
@@ -224,13 +266,42 @@ def main() -> int:
                 funnel=funnel,
                 scanner=scanner,
                 executor=executor,
+                monitor=monitor,
                 watchlist=watchlist,
             )
             write_heartbeat(settings, status)
-            time.sleep(settings.scan_interval_s)
+            stop_event.wait(settings.scan_interval_s)
     except KeyboardInterrupt:
         log.info("interrupted, shutting down")
-        return 0
+    finally:
+        stop_event.set()
+        monitor_thread.join(timeout=5)
+    return 0
+
+
+def _monitor_loop(
+    settings: Settings,
+    risk: RiskEngine,
+    monitor: PositionMonitor,
+    stop_event: threading.Event,
+) -> None:
+    """Background thread: tick the position monitor on its own cadence."""
+    log.info("position-monitor thread started (interval=%ds)",
+             settings.position_monitor_interval_s)
+    while not stop_event.is_set():
+        try:
+            state = risk.load_state()
+            state = risk.tick_rollover(state)
+            tick = monitor.tick(state)
+            if tick.closes_triggered:
+                log.warning(
+                    "monitor tick closed %d positions (%s)",
+                    tick.closes_triggered, tick.reasons,
+                )
+        except Exception as e:
+            log.error("monitor tick failed: %s", e, exc_info=True)
+        stop_event.wait(settings.position_monitor_interval_s)
+    log.info("position-monitor thread exiting")
 
 
 if __name__ == "__main__":

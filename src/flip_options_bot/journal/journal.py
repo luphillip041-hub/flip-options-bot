@@ -139,6 +139,55 @@ class Journal:
             conn.commit()
             return written
 
+    def upsert(self, event: TradeEvent) -> bool:
+        """Idempotent UPSERT. Returns True if a new row was created, False if updated.
+
+        Use this for canonical reconciliation events (e.g., close fills from
+        the broker). If the row already exists with the same event_id, the
+        price + realized_pnl + raw_broker_fill fields are overwritten so the
+        canonical broker fill wins over the placeholder written by the
+        closer. The position_state is then recomputed.
+
+        SQLite's INSERT...ON CONFLICT DO UPDATE always returns rowcount=1,
+        so we explicitly check for existence beforehand to distinguish
+        create vs update.
+        """
+        was_new = not self.has_event(event.event_id)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO trades (
+                    event_id, ts, kind, symbol, side, qty, price,
+                    position_id, realized_pnl, fees, strategy_id, raw_broker_fill
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    ts = excluded.ts,
+                    price = excluded.price,
+                    realized_pnl = excluded.realized_pnl,
+                    fees = excluded.fees,
+                    raw_broker_fill = excluded.raw_broker_fill
+                """,
+                (
+                    event.event_id,
+                    event.ts,
+                    event.kind,
+                    event.symbol,
+                    event.side,
+                    event.qty,
+                    event.price,
+                    event.position_id,
+                    event.realized_pnl,
+                    event.fees,
+                    event.strategy_id,
+                    json.dumps(event.raw_broker_fill) if event.raw_broker_fill else None,
+                ),
+            )
+            # Always recompute position_state so qty_closed + state reflect the
+            # latest close event (not the placeholder).
+            self._update_position_state(conn, event)
+            conn.commit()
+            return was_new
+
     def _update_position_state(self, conn: sqlite3.Connection, event: TradeEvent) -> None:
         if not event.position_id:
             return
@@ -162,45 +211,55 @@ class Journal:
                 ),
             )
         elif event.kind == "close":
-            # Read current state first, then update.
+            # Idempotent recompute from the canonical trades table.
+            # This is safe for upserts (the same event_id arriving twice
+            # produces the same totals).
             row = conn.execute(
-                "SELECT qty_open, qty_closed, avg_exit_price FROM positions WHERE position_id = ?",
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN kind='open' THEN qty ELSE 0 END), 0) AS qty_open_total,
+                    COALESCE(SUM(CASE WHEN kind='close' THEN qty ELSE 0 END), 0) AS qty_closed_total,
+                    COALESCE(SUM(CASE WHEN kind='close' THEN realized_pnl ELSE 0 END), 0) AS realized_total
+                FROM trades WHERE position_id = ?
+                """,
                 (event.position_id,),
             ).fetchone()
-            if row is None:
-                # Closing an unknown position_id is a logic error; skip.
-                return
-            qty_open, qty_closed_prev, avg_exit_prev = row
-            qty_closed_prev = qty_closed_prev or 0
-            avg_exit_prev = avg_exit_prev or 0.0
+            qty_open_total, qty_closed_total, realized_total = row
 
-            new_qty_closed = qty_closed_prev + event.qty
-            # Weighted-average exit price
-            if new_qty_closed > 0:
-                new_avg_exit = (
-                    (avg_exit_prev * qty_closed_prev) + (event.price * event.qty)
-                ) / new_qty_closed
+            # Weighted avg exit price from close rows only
+            close_rows = conn.execute(
+                """
+                SELECT qty, price FROM trades
+                WHERE position_id = ? AND kind = 'close'
+                """,
+                (event.position_id,),
+            ).fetchall()
+            total_qty_closed = sum(r[0] for r in close_rows)
+            if total_qty_closed > 0:
+                avg_exit = sum(r[0] * r[1] for r in close_rows) / total_qty_closed
             else:
-                new_avg_exit = 0.0
+                avg_exit = 0.0
 
-            new_state = "closed" if new_qty_closed >= (qty_open or 0) else "partial"
+            new_state = "closed" if qty_closed_total >= qty_open_total and qty_open_total > 0 else "open"
 
             conn.execute(
                 """
                 UPDATE positions SET
-                    closed_at = COALESCE(closed_at, ?),
+                    qty_open = ?,
                     qty_closed = ?,
                     avg_exit_price = ?,
-                    realized_pnl = realized_pnl + ?,
-                    state = ?
+                    realized_pnl = ?,
+                    state = ?,
+                    closed_at = COALESCE(closed_at, ?)
                 WHERE position_id = ?
                 """,
                 (
-                    event.ts,
-                    new_qty_closed,
-                    new_avg_exit,
-                    event.realized_pnl,
+                    qty_open_total,
+                    qty_closed_total,
+                    avg_exit,
+                    realized_total,
                     new_state,
+                    event.ts,
                     event.position_id,
                 ),
             )

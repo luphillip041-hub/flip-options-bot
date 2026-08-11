@@ -43,7 +43,9 @@ from alpaca.trading.requests import (
     GetOptionContractsRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    StopLossRequest,
     StopLimitOrderRequest,
+    TakeProfitRequest,
 )
 from alpaca.trading.models import Order as AlpacaOrder
 
@@ -335,32 +337,87 @@ class BrokerClient:
     def place_tpsl_bracket(
         self,
         parent_order_id: str,
+        contract_symbol: str,
+        qty: int,
         tp_price: float,
         sl_trigger_price: float,
         sl_limit_price: float,
     ) -> BracketLegs:
-        """Place a one-cancels-other TP/SL bracket on the parent position.
+        """Place a BRACKET order: parent BUY limit + TP limit + SL stop-limit.
 
-        The flip-alpaca-bot lesson: TP/SL MUST live at the broker, not in
-        the daemon. If the daemon dies, the broker still exits the position.
-        This is the "broker-resident TP/SL" rule from the FLIP_PHASE comment.
+        This is the structural fix vs. flip-alpaca-bot: TP/SL lives at the
+        broker. If the daemon dies, the broker still exits the position.
+
+        Caller must supply the contract_symbol (OCC) and qty because the
+        parent order_id alone doesn't carry those for a single-leg option.
         """
-        req = StopLimitOrderRequest(
-            symbol=parent_order_id,  # placeholder; replaced below
-            qty=1,
-            side=OrderSide.SELL,
+        req = LimitOrderRequest(
+            symbol=contract_symbol,
+            qty=qty,
+            side=OrderSide.BUY,
             time_in_force=TimeInForce.GTC,
-            stop_price=round(sl_trigger_price, 2),
-            limit_price=round(sl_limit_price, 2),
-            client_order_id=f"sl-{parent_order_id}",
-            order_class=OrderClass.OCO,
-            take_profit={"limit_price": round(tp_price, 2)},
+            type=OrderType.LIMIT,
+            limit_price=round(tp_price * 0.99, 2),  # placeholder parent
+            client_order_id=f"bracket-{parent_order_id}",
+            order_class=OrderClass.BRACKET,
+            take_profit=TakeProfitRequest(limit_price=round(tp_price, 2)),
+            stop_loss=StopLossRequest(
+                stop_price=round(sl_trigger_price, 2),
+                limit_price=round(sl_limit_price, 2),
+            ),
         )
-        # alpaca-py expects the actual contract symbol for the parent; we
-        # need to look it up via the original order. For the scaffold, this
-        # is a no-op — broker-resident TP/SL comes in session N=3.
-        log.warning("place_tpsl_bracket not yet wired (session N=3)")
-        return BracketLegs(tp_price=tp_price, sl_price=sl_trigger_price)
+        log.info(
+            "place_tpsl_bracket %s qty=%d tp=%.2f sl=%.2f/%.2f",
+            contract_symbol, qty, tp_price, sl_trigger_price, sl_limit_price,
+        )
+        try:
+            order = self.trading.submit_order(req)
+        except Exception as e:
+            log.error("place_tpsl_bracket submit failed: %s", e)
+            raise
+        return BracketLegs(
+            tp_price=tp_price,
+            sl_price=sl_trigger_price,
+            tp_order_id=str(order.id) if order is not None and getattr(order, "id", None) else "",
+            sl_order_id="",
+        )
+
+    def submit_bracket_buy(
+        self,
+        contract_symbol: str,
+        qty: int,
+        limit_price: float,
+        tp_price: float,
+        sl_trigger_price: float,
+        sl_limit_price: float,
+        client_order_id: str,
+    ) -> AlpacaOrder:
+        """Combined BUY-limit + TP-limit + SL-stop-limit in a single BRACKET order.
+
+        This is the preferred entry path. The parent fills only if the limit
+        hits; once filled, both TP and SL are live at the broker as OCO legs.
+        """
+        req = LimitOrderRequest(
+            symbol=contract_symbol,
+            qty=qty,
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.GTC,
+            type=OrderType.LIMIT,
+            limit_price=round(limit_price, 2),
+            client_order_id=client_order_id,
+            order_class=OrderClass.BRACKET,
+            take_profit=TakeProfitRequest(limit_price=round(tp_price, 2)),
+            stop_loss=StopLossRequest(
+                stop_price=round(sl_trigger_price, 2),
+                limit_price=round(sl_limit_price, 2),
+            ),
+        )
+        log.info(
+            "submit_bracket_buy %s qty=%d entry=%.2f tp=%.2f sl=%.2f/%.2f coid=%s",
+            contract_symbol, qty, limit_price, tp_price, sl_trigger_price,
+            sl_limit_price, client_order_id,
+        )
+        return self.trading.submit_order(req)
 
     # ===== Order queries =====
 
