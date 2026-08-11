@@ -17,12 +17,13 @@ StandardError=append:/root/flip/projects/flip-options-bot/runs/daemon.log
 
 # Hardening
 NoNewPrivileges=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+ReadWritePaths=/root/flip/projects/flip-options-bot/runs /root/.config/flip-options-bot
 
 [Install]
 WantedBy=multi-user.target
