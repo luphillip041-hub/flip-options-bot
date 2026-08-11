@@ -32,6 +32,8 @@ build/
 # Runtime state — gitignored by default
 runs/state.db
 runs/state.db-journal
+runs/journal.db
+runs/journal.db-journal
 runs/heartbeat.json
 runs/trades.jsonl
 runs/funnel.jsonl
@@ -39,6 +41,7 @@ runs/canonical_close_ledger.jsonl
 runs/alert_relay.jsonl
 runs/daemon.log
 runs/*.log
+runs/*.db
 
 # Credentials / keys
 *.pem
