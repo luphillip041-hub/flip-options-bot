@@ -64,6 +64,33 @@ class FunnelRecorder:
             f.write(json.dumps(asdict(row)) + "\n")
         return True
 
+    def emit_skip(self, reason: str = "no_candidates") -> bool:
+        """Convenience: emit a one-row skip funnel entry without scanning.
+
+        Used by the daemon when the scan loop is short-circuited (e.g.,
+        market closed, kill switch active). Keeps the diagnostic
+        instrument running even when there's no candidate work.
+        """
+        row = FunnelRow(
+            scan_id=str(uuid.uuid4()),
+            ts=datetime.now(timezone.utc).isoformat(),
+            watchlist_count=0,
+            eligible_count=0,
+            chains_fetched=[],
+            chains_failed=[],
+            raw_signal_count=0,
+            move_pass_count=0,
+            momentum_pass_count=0,
+            contract_select_pass=0,
+            contract_select_none={},
+            conviction_distribution=[],
+            sized_count=0,
+            submitted_count=0,
+            dominant_skip_reason=reason,
+            extras={},
+        )
+        return self.emit(row)
+
     def _load_scan_ids(self) -> set[str]:
         ids = set()
         if not self.path.exists():

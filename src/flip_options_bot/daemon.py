@@ -23,6 +23,8 @@ from .broker import BrokerClient
 from .config import Settings, get_settings
 from .execution import Closer, Executor
 from .journal import Journal
+from .logging_json import attach as attach_json_logger
+from .market_time import is_entry_window, is_market_open
 from .monitor.position_monitor import PositionMonitor
 from .risk import RiskEngine
 from .signal import FunnelRecorder
@@ -44,6 +46,10 @@ def setup_logging(run_dir: Path) -> None:
             logging.FileHandler(run_dir / "daemon.log"),
         ],
     )
+    # Also emit a structured JSON line per record. The JSON handler is the
+    # authoritative machine-readable log; the text daemon.log above is the
+    # human-readable companion.
+    attach_json_logger(run_dir)
 
 
 def write_heartbeat(settings: Settings, status: dict) -> None:
@@ -90,6 +96,30 @@ def run_once(
         }
 
     # Step 2: scan
+    # Only scan during market hours (09:30-16:00 ET) AND inside the entry
+    # window (09:45-15:45 ET — first/last 15 min are too volatile).
+    if not is_market_open():
+        log.info("scan skipped: market closed")
+        funnel.emit_skip(reason="market_closed")
+        return {
+            "scan_id": "market-closed",
+            "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
+            "watchlist_count": 0,
+            "submitted_count": 0,
+            "reconciled": n_reconciled,
+            "dominant_skip_reason": "market_closed",
+        }
+    if not is_entry_window():
+        log.info("scan skipped: outside entry window (09:45-15:45 ET)")
+        funnel.emit_skip(reason="outside_entry_window")
+        return {
+            "scan_id": "outside-entry",
+            "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
+            "watchlist_count": 0,
+            "submitted_count": 0,
+            "reconciled": n_reconciled,
+            "dominant_skip_reason": "outside_entry_window",
+        }
     result = scanner.scan(watchlist)
     log.info("scan %s: watchlist=%d candidates=%d skip=%s",
              result.funnel_row.scan_id[:8],
@@ -244,9 +274,10 @@ def main() -> int:
     # only mutates state via Closer.flatten_position() (which is idempotent
     # on client_order_id) and reconcile_fills() (also idempotent).
     stop_event = threading.Event()
+    consecutive_failures = [0]
     monitor_thread = threading.Thread(
         target=_monitor_loop,
-        args=(settings, risk, monitor, stop_event),
+        args=(settings, risk, broker, closer, monitor, stop_event, consecutive_failures),
         name="position-monitor",
         daemon=True,
     )
@@ -282,24 +313,51 @@ def main() -> int:
 def _monitor_loop(
     settings: Settings,
     risk: RiskEngine,
+    broker: BrokerClient,
+    closer: Closer,
     monitor: PositionMonitor,
     stop_event: threading.Event,
+    consecutive_failures: list[int] | None = None,
 ) -> None:
-    """Background thread: tick the position monitor on its own cadence."""
+    """Background thread: tick the position monitor on its own cadence.
+
+    Each tick:
+    1. tick_rollover
+    2. evaluate caps → if tripped, flatten all + log
+    3. monitor.tick (SL/TP/trailing/EOD)
+    4. reconcile_fills (canonical broker fills)
+    """
     log.info("position-monitor thread started (interval=%ds)",
              settings.position_monitor_interval_s)
     while not stop_event.is_set():
         try:
             state = risk.load_state()
             state = risk.tick_rollover(state)
+
+            # === Loss-cap watchdog ===
+            acct = broker.get_account()
+            equity = float(acct.get("equity", 0))
+            tripped = risk.evaluate_caps(state, equity)
+            if tripped:
+                log.warning("loss cap tripped: %s — flattening all", state.kill_reason)
+                closer.flatten_all(state, reason=f"kill_switch: {state.kill_reason}")
+
+            # === Per-position monitor ===
             tick = monitor.tick(state)
             if tick.closes_triggered:
                 log.warning(
                     "monitor tick closed %d positions (%s)",
                     tick.closes_triggered, tick.reasons,
                 )
+            if consecutive_failures is not None:
+                consecutive_failures[0] = 0
         except Exception as e:
             log.error("monitor tick failed: %s", e, exc_info=True)
+            if consecutive_failures is not None:
+                consecutive_failures[0] += 1
+                if consecutive_failures[0] >= 5:
+                    log.critical("monitor loop failed 5 cycles in a row — requesting exit")
+                    stop_event.set()
         stop_event.wait(settings.position_monitor_interval_s)
     log.info("position-monitor thread exiting")
 

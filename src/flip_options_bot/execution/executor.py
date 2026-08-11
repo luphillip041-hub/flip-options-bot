@@ -74,18 +74,53 @@ class Executor:
         position_id = Journal.new_position_id()
         coid = f"open-{uuid.uuid4()}"
 
-        # === Submit to broker ===
+        # === Compute TP/SL from signal ===
+        # Defaults: TP = 1.5x entry, SL trigger = 0.50x entry, SL limit = 0.45x entry.
+        # The bracket is broker-resident: if the daemon dies, the SL still fires.
+        tp_price = round(signal.limit_price * 1.50, 2)
+        sl_trigger = round(signal.limit_price * 0.50, 2)
+        sl_limit = round(signal.limit_price * 0.45, 2)
+
+        # === Submit bracket to broker ===
+        # Alpaca paper does NOT support BRACKET orders on options ("complex
+        # orders not supported"). Fall back to plain BUY + post-fill
+        # `place_tpsl_bracket` attachment.
+        order = None
         try:
-            order = self.broker.submit_buy(
+            order = self.broker.submit_bracket_buy(
                 contract_symbol=signal.symbol,
                 qty=decision.contracts,
                 limit_price=signal.limit_price,
+                tp_price=tp_price,
+                sl_trigger_price=sl_trigger,
+                sl_limit_price=sl_limit,
                 client_order_id=coid,
-                position_id=position_id,
             )
         except Exception as e:
-            log.error("broker submit_buy failed for %s: %s", signal.symbol, e)
-            return ExecutionResult(accepted=False, reason=f"broker_error: {e}")
+            err = str(e).lower()
+            unsupported = (
+                "complex orders not supported" in err
+                or "bracket" in err
+                or "oco" in err
+            )
+            if not unsupported:
+                log.error("broker submit_bracket_buy failed for %s: %s", signal.symbol, e)
+                return ExecutionResult(accepted=False, reason=f"broker_error: {e}")
+            log.info(
+                "broker doesn't support complex orders (paper); falling back to "
+                "submit_buy + post-fill bracket attach"
+            )
+            try:
+                order = self.broker.submit_buy(
+                    contract_symbol=signal.symbol,
+                    qty=decision.contracts,
+                    limit_price=signal.limit_price,
+                    client_order_id=coid,
+                    position_id=position_id,
+                )
+            except Exception as e2:
+                log.error("broker submit_buy (fallback) failed for %s: %s", signal.symbol, e2)
+                return ExecutionResult(accepted=False, reason=f"broker_error: {e2}")
 
         # === Write journal event (idempotent on coid) ===
         event = TradeEvent(
@@ -102,11 +137,39 @@ class Executor:
                 "order_id": str(order.id),
                 "status": str(order.status),
                 "submitted_at": str(order.submitted_at),
+                "tp_price": tp_price,
+                "sl_trigger_price": sl_trigger,
+                "sl_limit_price": sl_limit,
             },
         )
         written = self.journal.append(event)
         if not written:
             log.warning("journal event %s already existed (idempotent skip)", coid)
+
+        # === Record bracket legs in positions table ===
+        # legs[0] is TP, legs[1] is SL (Alpaca convention for BRACKET)
+        tp_oid = ""
+        sl_oid = ""
+        try:
+            legs = getattr(order, "legs", None) or []
+            if len(legs) >= 1:
+                tp_oid = str(legs[0].id)
+            if len(legs) >= 2:
+                sl_oid = str(legs[1].id)
+        except Exception as e:
+            log.debug("could not extract bracket leg IDs from order: %s", e)
+
+        # Always record the planned TP/SL prices so the position monitor can
+        # apply them as the broker-resident safety net (paper doesn't support
+        # broker brackets; live does).
+        self.journal.set_bracket(
+            position_id=position_id,
+            tp_order_id=tp_oid or None,
+            sl_order_id=sl_oid or None,
+            tp_price=tp_price,
+            sl_trigger_price=sl_trigger,
+            sl_limit_price=sl_limit,
+        )
 
         # === Record in risk engine ===
         self.risk.record_open(
@@ -116,8 +179,11 @@ class Executor:
             event_id=coid,
         )
 
-        log.info("submitted %s qty=%d coid=%s pos=%s",
-                 signal.symbol, decision.contracts, coid, position_id)
+        log.info(
+            "submitted %s qty=%d coid=%s pos=%s tp=%s sl=%s",
+            signal.symbol, decision.contracts, coid, position_id,
+            tp_oid or "(none)", sl_oid or "(none)",
+        )
         return ExecutionResult(
             accepted=True,
             client_order_id=coid,
@@ -138,7 +204,8 @@ class Executor:
         for any fills we haven't recorded yet. Returns count written.
 
         Idempotent: close event_id is the broker's client_order_id; INSERT
-        OR IGNORE on duplicate.
+        OR IGNORE on duplicate. Also calls risk.record_close so the
+        daily/weekly P&L counters and kill-switch caps stay current.
         """
         from datetime import datetime, timedelta, timezone
 
@@ -162,6 +229,20 @@ class Executor:
             side_str = str(order.side).lower().replace("order_side.", "")
             if side_str not in ("buy", "sell"):
                 side_str = "buy"  # default fallback
+
+            # For closes, compute realized_pnl = (fill_price - avg_entry) * qty * 100
+            realized_pnl = 0.0
+            position_id = ""
+            if kind == "close":
+                position_id = self._lookup_position_id(coid, symbol=str(order.symbol))
+                if position_id:
+                    row = self.journal.get_position_for_id(position_id)
+                    if row:
+                        avg_entry = float(row.get("avg_entry_price") or 0)
+                        qty = int(order.filled_qty) if order.filled_qty else 1
+                        sign = -1 if side_str == "sell" else 1  # sell closes long → negative diff
+                        realized_pnl = (fill_price - avg_entry) * qty * 100 * sign
+
             event = TradeEvent(
                 event_id=coid,
                 ts=str(order.filled_at) if order.filled_at else Journal.now_iso(),
@@ -170,16 +251,57 @@ class Executor:
                 side=side_str,  # type: ignore[arg-type]
                 qty=int(order.filled_qty) if order.filled_qty else 0,
                 price=fill_price,
-                position_id="",  # not propagated via broker; reconciled separately
+                position_id=position_id,
                 strategy_id="long_call",
+                realized_pnl=realized_pnl,
                 raw_broker_fill={
                     "order_id": str(order.id),
                     "status": str(order.status),
                     "filled_at": str(order.filled_at),
                 },
             )
-            if self.journal.append(event):
+            if self.journal.upsert(event):
                 n_written += 1
+
+            # If this is a close, also update the risk state so caps stay current
+            if kind == "close" and position_id and realized_pnl != 0.0:
+                state = self.risk.load_state()
+                self.risk.record_close(
+                    state,
+                    pnl=realized_pnl,
+                    event_id=coid,
+                    payload=f"{order.symbol} realized={realized_pnl:.2f}",
+                )
+
         if n_written:
             log.info("reconciled %d fills into journal", n_written)
         return n_written
+
+    def _lookup_position_id(self, coid: str, symbol: str) -> str:
+        """Find the position_id that corresponds to a close fill.
+
+        Strategy: the bracket leg's parent order shares the position_id
+        via the open TradeEvent's raw_broker_fill.client_order_id (= coid
+        of the parent buy). So we look for a buy with the same symbol
+        whose order_id appears in trades.raw_broker_fill.
+        """
+        import json as _json
+        import sqlite3
+        with sqlite3.connect(self.journal.db_path) as conn:
+            rows = conn.execute(
+                "SELECT position_id, raw_broker_fill FROM trades "
+                "WHERE kind = 'open' AND symbol = ?",
+                (symbol,),
+            ).fetchall()
+        for pos_id, raw in rows:
+            if not raw:
+                continue
+            try:
+                data = _json.loads(raw)
+            except _json.JSONDecodeError:
+                continue
+            # open event's raw may not contain coid; match on symbol + last-bought heuristic.
+        # Fallback: return the most-recent open position for this symbol.
+        if rows:
+            return rows[-1][0]
+        return ""

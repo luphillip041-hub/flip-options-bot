@@ -203,6 +203,33 @@ class RiskEngine:
         reason: str = ""
         contracts: int = 0
 
+    def evaluate_caps(self, state: RiskState, equity: float) -> bool:
+        """Check daily + weekly loss caps. If breached, trip kill switch
+        and return True (caller should flatten positions).
+
+        This is called every cycle by the monitor loop, separate from
+        `evaluate_pre_trade` (which is called only when entering a trade).
+        Caps get checked on every tick so a single bad close triggers the
+        trip immediately, not on the next scan.
+        """
+        daily_cap = equity * (self.settings.daily_loss_cap_pct / 100.0)
+        weekly_cap = equity * (self.settings.weekly_loss_cap_pct / 100.0)
+        if state.daily_pnl <= -daily_cap:
+            state.kill_switch = True
+            state.kill_reason = (
+                f"daily_loss_cap: {state.daily_pnl:.2f} <= -{daily_cap:.2f}"
+            )
+            self._persist_state(state)
+            return True
+        if state.weekly_pnl <= -weekly_cap:
+            state.kill_switch = True
+            state.kill_reason = (
+                f"weekly_loss_cap: {state.weekly_pnl:.2f} <= -{weekly_cap:.2f}"
+            )
+            self._persist_state(state)
+            return True
+        return False
+
     def evaluate_pre_trade(
         self,
         state: RiskState,

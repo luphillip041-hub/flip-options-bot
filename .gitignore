@@ -40,6 +40,10 @@ runs/funnel.jsonl
 runs/canonical_close_ledger.jsonl
 runs/alert_relay.jsonl
 runs/daemon.log
+runs/structured.jsonl
+runs/observation_state.json
+runs/digest.log
+runs/record-day.log
 runs/*.log
 runs/*.db
 

@@ -98,10 +98,29 @@ class Journal:
                     avg_exit_price REAL,
                     realized_pnl REAL DEFAULT 0,
                     strategy_id TEXT DEFAULT '',
-                    state TEXT NOT NULL DEFAULT 'open'
+                    state TEXT NOT NULL DEFAULT 'open',
+                    peak_mark REAL,
+                    tp_order_id TEXT,
+                    sl_order_id TEXT,
+                    tp_price REAL,
+                    sl_trigger_price REAL,
+                    sl_limit_price REAL
                 )
                 """
             )
+            # Migration: add new columns if missing (older deployments).
+            for col_ddl in (
+                "ALTER TABLE positions ADD COLUMN peak_mark REAL",
+                "ALTER TABLE positions ADD COLUMN tp_order_id TEXT",
+                "ALTER TABLE positions ADD COLUMN sl_order_id TEXT",
+                "ALTER TABLE positions ADD COLUMN tp_price REAL",
+                "ALTER TABLE positions ADD COLUMN sl_trigger_price REAL",
+                "ALTER TABLE positions ADD COLUMN sl_limit_price REAL",
+            ):
+                try:
+                    conn.execute(col_ddl)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
             conn.commit()
 
     def append(self, event: TradeEvent) -> bool:
@@ -268,26 +287,79 @@ class Journal:
 
     def get_open_positions(self) -> list[dict]:
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
+            cur = conn.execute(
                 "SELECT * FROM positions WHERE state = 'open' OR state = 'partial'"
-            ).fetchall()
-        return [dict(zip([c[0] for c in conn.execute("SELECT * FROM positions LIMIT 0").description], r)) for r in rows] if rows else []
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return []
+            cols = [c[0] for c in cur.description]
+            return [dict(zip(cols, r)) for r in rows]
 
     def get_all_positions(self) -> list[dict]:
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT * FROM positions ORDER BY opened_at"
-            ).fetchall()
+            cur = conn.execute("SELECT * FROM positions ORDER BY opened_at")
+            rows = cur.fetchall()
             if not rows:
                 return []
-            cols = [c[0] for c in conn.execute("SELECT * FROM positions LIMIT 0").description]
+            cols = [c[0] for c in cur.description]
             return [dict(zip(cols, r)) for r in rows]
+
+    def get_position_for_id(self, position_id: str) -> dict | None:
+        """Return the positions row for a single position_id, or None."""
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("SELECT * FROM positions WHERE position_id = ?", (position_id,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        cols = [c[0] for c in cur.description]
+        return dict(zip(cols, row))
 
     def has_event(self, event_id: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             return conn.execute(
                 "SELECT 1 FROM trades WHERE event_id = ?", (event_id,)
             ).fetchone() is not None
+
+    def set_bracket(
+        self,
+        position_id: str,
+        tp_order_id: str | None,
+        sl_order_id: str | None,
+        tp_price: float | None,
+        sl_trigger_price: float | None,
+        sl_limit_price: float | None,
+    ) -> None:
+        """Record the bracket leg order IDs + prices for a position.
+
+        Called by the executor after `submit_bracket_buy` returns the
+        bracket legs from the broker. Used by `reconcile_fills` to
+        detect if a bracket leg filled and write the canonical close
+        event with the correct realized_pnl.
+        """
+        if not position_id:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE positions SET
+                    tp_order_id = COALESCE(?, tp_order_id),
+                    sl_order_id = COALESCE(?, sl_order_id),
+                    tp_price = COALESCE(?, tp_price),
+                    sl_trigger_price = COALESCE(?, sl_trigger_price),
+                    sl_limit_price = COALESCE(?, sl_limit_price)
+                WHERE position_id = ?
+                """,
+                (
+                    tp_order_id,
+                    sl_order_id,
+                    tp_price,
+                    sl_trigger_price,
+                    sl_limit_price,
+                    position_id,
+                ),
+            )
+            conn.commit()
 
     def total_realized_pnl(self) -> float:
         with sqlite3.connect(self.db_path) as conn:
