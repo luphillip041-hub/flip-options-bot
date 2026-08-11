@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.pyright_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Runtime state — gitignored by default
+runs/state.db
+runs/state.db-journal
+runs/heartbeat.json
+runs/trades.jsonl
+runs/funnel.jsonl
+runs/canonical_close_ledger.jsonl
+runs/alert_relay.jsonl
+runs/daemon.log
+runs/*.log
+
+# Credentials / keys
+*.pem
+*.key
+*.crt
+
+# Local-only data
+runs/backtests/*.parquet
+runs/backtests/*.csv
+!runs/backtests/.gitkeep

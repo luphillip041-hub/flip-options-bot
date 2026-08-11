@@ -1,0 +1,28 @@
+[Unit]
+Description=flip-options-bot daemon (0-14 DTE equity options paper trader)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/flip/projects/flip-options-bot
+EnvironmentFile=/root/.config/flip-options-bot/.env
+ExecStart=/root/flip/projects/flip-options-bot/.venv/bin/python -m flip_options_bot.daemon
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/root/flip/projects/flip-options-bot/runs/daemon.log
+StandardError=append:/root/flip/projects/flip-options-bot/runs/daemon.log
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

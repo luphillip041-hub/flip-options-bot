@@ -1,0 +1,17 @@
+[Unit]
+Description=flip-options-bot dashboard (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/flip/projects/flip-options-bot
+EnvironmentFile=/root/.config/flip-options-bot/.env
+ExecStart=/root/flip/projects/flip-options-bot/.venv/bin/streamlit run src/flip_options_bot/monitor/dashboard.py --server.port=8100 --server.address=127.0.0.1 --server.headless=true
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
