@@ -104,7 +104,11 @@ class Settings:
     min_tp_profit_dollar: float = 25.0   # don't take tiny profit at wash
 
     long_call_enabled: bool = True
-    long_call_min_direction_move_pct: float = 0.003
+    # 0.10% (10 bps) — current SPY 20-min moves are running -0.05% to
+    # -0.13% throughout the day. Anything tighter than 0.10% yields
+    # zero setups on quiet days. The conviction filter (0.45) is the
+    # real gate; this just sets the floor for entry consideration.
+    long_call_min_direction_move_pct: float = 0.0010
     long_call_max_vwap_extension_pct: float = 0.020
     long_call_min_short_momentum_pct: float = 0.0010
     long_call_min_conviction: float = 0.45
@@ -188,7 +192,7 @@ class Settings:
             min_tp_profit_dollar=_coerce_float(merged, "FOB_MIN_TP_PROFIT_DOLLAR", 25.0),
             long_call_enabled=_coerce_bool(merged, "FOB_LONG_CALL_ENABLED", True),
             long_call_min_direction_move_pct=_coerce_float(
-                merged, "FOB_LONG_CALL_MIN_DIRECTION_MOVE_PCT", 0.003
+                merged, "FOB_LONG_CALL_MIN_DIRECTION_MOVE_PCT", 0.0010
             ),
             long_call_max_vwap_extension_pct=_coerce_float(
                 merged, "FOB_LONG_CALL_MAX_VWAP_EXTENSION_PCT", 0.020

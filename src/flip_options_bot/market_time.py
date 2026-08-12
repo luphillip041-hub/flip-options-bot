@@ -55,9 +55,10 @@ def is_entry_window(dt_utc: datetime | None = None) -> bool:
     """True if a new trade entry is allowed.
 
     Default windows (avoiding open/close volatility AND lunch lull):
-      - 10:00-11:30 ET (morning momentum after open stabilizes)
+      - 09:45-11:30 ET (morning ORB + continuation)
       - 14:00-15:30 ET (afternoon continuation)
 
+    The 09:30-09:45 gap is just the first 15 min — too volatile.
     The lunch lull (11:30-14:00) is low-volume + choppy — avoid it.
     The last 30 min (15:30-16:00) have gamma + spread issues — avoid.
     """
@@ -65,8 +66,8 @@ def is_entry_window(dt_utc: datetime | None = None) -> bool:
     if d.weekday() >= 5:
         return False
     t = d.time()
-    # Morning window: 10:00 - 11:30
-    if time(10, 0) <= t < time(11, 30):
+    # Morning window: 09:45 - 11:30 (includes ORB breakouts after 10:00 open)
+    if time(9, 45) <= t < time(11, 30):
         return True
     # Afternoon window: 14:00 - 15:30
     if time(14, 0) <= t < time(15, 30):

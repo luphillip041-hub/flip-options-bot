@@ -252,12 +252,20 @@ def test_entry_window_late():
     assert is_entry_window(dt) is False
 
 
-def test_entry_window_open():
-    """09:45 ET → False (first 15 min)."""
+def test_entry_window_open_15min():
+    """09:30 ET → False (first 15 min, too volatile)."""
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    dt = datetime(2026, 8, 12, 9, 30, tzinfo=ET)
+    assert is_entry_window(dt) is False
+
+
+def test_entry_window_945():
+    """09:45 ET → True (start of morning window)."""
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
     dt = datetime(2026, 8, 12, 9, 45, tzinfo=ET)
-    assert is_entry_window(dt) is False
+    assert is_entry_window(dt) is True
 
 
 # ===== Cross-validation: default FOMC list is non-empty =====
