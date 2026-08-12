@@ -277,7 +277,7 @@ def main() -> int:
     consecutive_failures = [0]
     monitor_thread = threading.Thread(
         target=_monitor_loop,
-        args=(settings, risk, broker, closer, monitor, stop_event, consecutive_failures),
+        args=(settings, risk, broker, closer, executor, monitor, stop_event, consecutive_failures),
         name="position-monitor",
         daemon=True,
     )
@@ -315,6 +315,7 @@ def _monitor_loop(
     risk: RiskEngine,
     broker: BrokerClient,
     closer: Closer,
+    executor: Executor,
     monitor: PositionMonitor,
     stop_event: threading.Event,
     consecutive_failures: list[int] | None = None,
@@ -324,8 +325,9 @@ def _monitor_loop(
     Each tick:
     1. tick_rollover
     2. evaluate caps → if tripped, flatten all + log
-    3. monitor.tick (SL/TP/trailing/EOD)
-    4. reconcile_fills (canonical broker fills)
+    3. cancel_stale_orders (orders ACCEPTED > 2 min that never filled)
+    4. monitor.tick (SL/TP/trailing/EOD)
+    5. reconcile_fills (canonical broker fills)
     """
     log.info("position-monitor thread started (interval=%ds)",
              settings.position_monitor_interval_s)
@@ -341,6 +343,14 @@ def _monitor_loop(
             if tripped:
                 log.warning("loss cap tripped: %s — flattening all", state.kill_reason)
                 closer.flatten_all(state, reason=f"kill_switch: {state.kill_reason}")
+
+            # === Stale-order cleanup ===
+            # Critical: orders that sit at ACCEPTED for >2 min without a fill
+            # are dead paper-account limbo. Cancel them so we don't have
+            # blocked position-count slots or phantom exposure.
+            n_cancelled = executor.cancel_stale_orders(older_than_seconds=120)
+            if n_cancelled:
+                log.warning("stale-order cleanup: %d orders cancelled", n_cancelled)
 
             # === Per-position monitor ===
             tick = monitor.tick(state)

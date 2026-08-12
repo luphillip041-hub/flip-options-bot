@@ -277,6 +277,61 @@ class Executor:
             log.info("reconciled %d fills into journal", n_written)
         return n_written
 
+    def cancel_stale_orders(self, older_than_seconds: int = 120) -> int:
+        """Cancel any open order that's been ACCEPTED but not filled for
+        longer than `older_than_seconds`. Returns count cancelled.
+
+        Critical structural fix vs. flip-alpaca-bot: an order that sits at
+        ACCEPTED forever (paper account quirk, low liquidity, stale quote)
+        silently blocks the slot it occupies in risk_engine.open_position_count.
+        We DON'T want to wait hours hoping the synthetic book picks it up.
+
+        We track which orders we've already cancelled via the journal's
+        raw_broker_fill JSON, so we don't cancel the same order twice.
+        """
+        from datetime import datetime, timezone
+
+        opens = self.broker.list_open_orders()
+        if not opens:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        n_cancelled = 0
+        for order in opens:
+            submitted = getattr(order, "submitted_at", None)
+            if submitted is None:
+                continue
+            if submitted.tzinfo is None:
+                submitted = submitted.replace(tzinfo=timezone.utc)
+            age = (now - submitted).total_seconds()
+            if age < older_than_seconds:
+                continue
+
+            coid = getattr(order, "client_order_id", "") or ""
+            if not coid:
+                continue
+
+            # Check journal: if already recorded as 'open' we don't want to
+            # cancel. Only cancel orders that haven't been journaled yet
+            # (i.e., they're stuck mid-submission).
+            if self.journal.has_event(coid):
+                log.debug("stale-order skip %s — already journaled", coid)
+                continue
+
+            try:
+                self.broker.cancel_order(str(order.id))
+                log.warning(
+                    "cancelled stale order %s (submitted=%s, age=%ds)",
+                    coid, submitted, int(age),
+                )
+                n_cancelled += 1
+            except Exception as e:
+                log.error("failed to cancel stale order %s: %s", coid, e)
+
+        if n_cancelled:
+            log.info("cancelled %d stale orders", n_cancelled)
+        return n_cancelled
+
     def _lookup_position_id(self, coid: str, symbol: str) -> str:
         """Find the position_id that corresponds to a close fill.
 

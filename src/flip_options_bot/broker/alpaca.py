@@ -301,17 +301,23 @@ class BrokerClient:
     ) -> AlpacaOrder:
         """Submit a BUY limit order. The `client_order_id` MUST be unique
         per submission and is used as the journal event_id. The broker will
-        echo it back as `order.client_order_id`."""
+        echo it back as `order.client_order_id`.
+
+        Time-in-force: GTC for non-0DTE contracts (so a 1DTE order
+        submitted after-hours survives to next session), DAY for 0DTE
+        (no point holding overnight — contract expires today).
+        """
+        tif = self._tif_for_contract(contract_symbol)
         req = LimitOrderRequest(
             symbol=contract_symbol,
             qty=qty,
             side=OrderSide.BUY,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=tif,
             limit_price=round(limit_price, 2),
             client_order_id=client_order_id,
         )
-        log.info("submit_buy %s qty=%d limit=%.2f coid=%s pos=%s",
-                 contract_symbol, qty, limit_price, client_order_id, position_id)
+        log.info("submit_buy %s qty=%d limit=%.2f coid=%s pos=%s tif=%s",
+                 contract_symbol, qty, limit_price, client_order_id, position_id, tif)
         return self.trading.submit_order(req)
 
     def submit_close_sell(
@@ -321,18 +327,39 @@ class BrokerClient:
         limit_price: float,
         client_order_id: str,
     ) -> AlpacaOrder:
-        """Submit a SELL limit order to close."""
+        """Submit a SELL limit order to close. Uses GTC so a flatten
+        submitted after-hours still closes at next session's open."""
         req = LimitOrderRequest(
             symbol=contract_symbol,
             qty=qty,
             side=OrderSide.SELL,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=TimeInForce.GTC,
             limit_price=round(limit_price, 2),
             client_order_id=client_order_id,
         )
         log.info("submit_close_sell %s qty=%d limit=%.2f coid=%s",
                  contract_symbol, qty, limit_price, client_order_id)
         return self.trading.submit_order(req)
+
+    def _tif_for_contract(self, contract_symbol: str) -> TimeInForce:
+        """Return DAY for 0DTE contracts (today's expiry), GTC otherwise.
+
+        OCC format: SPY{YYMMDD}{C|P}{strike*1000:08d}
+        E.g., SPY260811C00759000 → expiry 2026-08-11.
+        """
+        try:
+            yy = int(contract_symbol[3:5])
+            mm = int(contract_symbol[5:7])
+            dd = int(contract_symbol[7:9])
+            expiry_year = 2000 + yy
+            from datetime import date
+            exp = date(expiry_year, mm, dd)
+            today = date.today()
+            if exp <= today:
+                return TimeInForce.DAY  # 0DTE or already expired
+            return TimeInForce.GTC
+        except (ValueError, IndexError):
+            return TimeInForce.GTC  # safe default
 
     def place_tpsl_bracket(
         self,
@@ -431,25 +458,67 @@ class BrokerClient:
     def list_filled_orders(self, since_ts: datetime | None = None) -> list[AlpacaOrder]:
         """Canonical source for real-fill reconciliation.
 
-        Filters: status=filled, asset class=option. Returns full AlpacaOrder
-        objects so the journal can read fill_price, filled_qty, client_order_id.
+        Filters to filled option orders. Critical structural fix vs. the old
+        flip-alpaca-bot: alpaca-py v0.43+ has a known issue where the `after=`
+        parameter on `GetOrdersRequest` raises a TypeError due to string-vs-int
+        comparison on submitted_at. We try with `after` first; on TypeError,
+        we drop the filter and do client-side cutoff. We DO NOT silently pass
+        — that was the old bot's bug that hid real winners.
+
+        Note: GetOrdersRequest in current alpaca-py has no `asset_class`
+        parameter; we filter client-side to `AssetClass.US_OPTION`.
+
+        Returns full AlpacaOrder objects so the journal can read fill_price,
+        filled_qty, client_order_id.
         """
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
-        req = GetOrdersRequest(
-            status=QueryOrderStatus.CLOSED,
-            asset_class=AssetClass.US_OPTION,
-            after=since_ts,
-            limit=500,
-            nested=False,
-        )
+        orders: list = []
         try:
-            orders = self.trading.get_orders(req)
+            req = GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED,
+                after=since_ts,
+                limit=500,
+                nested=False,
+            )
+            orders = list(self.trading.get_orders(req))
+        except TypeError as e:
+            # SDK compare error — fall back to no server-side filter, cut client-side.
+            log.debug("list_filled_orders after= TypeError: %s — falling back", e)
+            try:
+                req = GetOrdersRequest(
+                    status=QueryOrderStatus.CLOSED,
+                    limit=500,
+                    nested=False,
+                )
+                orders = list(self.trading.get_orders(req))
+            except Exception as e2:
+                log.warning("list_filled_orders fallback failed: %s", e2)
+                return []
         except Exception as e:
             log.warning("list_filled_orders failed: %s", e)
             return []
-        # Filter to filled only (closed includes canceled)
-        return [o for o in orders if o.status == OrderStatus.FILLED]
+
+        # Filter: must be FILLED + option asset class + within cutoff
+        from datetime import timezone
+        cutoff = since_ts
+        if cutoff is not None and cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        out = []
+        for o in orders:
+            if o.status != OrderStatus.FILLED:
+                continue
+            asset_class = getattr(o, "asset_class", None) or getattr(o, "assetClass", None)
+            if asset_class is not None and asset_class != AssetClass.US_OPTION:
+                continue
+            if cutoff is not None and getattr(o, "submitted_at", None) is not None:
+                submitted = o.submitted_at
+                if submitted.tzinfo is None:
+                    submitted = submitted.replace(tzinfo=timezone.utc)
+                if submitted < cutoff:
+                    continue
+            out.append(o)
+        return out
 
     def list_open_orders(self) -> list[AlpacaOrder]:
         try:
