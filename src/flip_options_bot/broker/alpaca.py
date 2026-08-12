@@ -139,17 +139,46 @@ class BrokerClient:
     # ===== Market data (stocks) =====
 
     def get_stock_quote(self, symbol: str) -> dict | None:
-        req = StockLatestQuoteRequest(symbol_or_symbols=symbol)
-        quote = self.data_stocks.get_stock_latest_quote(req)
-        if not quote or symbol not in quote:
+        """Latest bid/ask for a stock. Uses curl (not SDK) because
+        alpaca-py's urllib hits TLS fingerprint block from this VPS.
+        """
+        import base64
+        import subprocess
+        import json as _json
+
+        url = (
+            f"{self.settings.alpaca_data_base}/v2/stocks/quotes/latest"
+            f"?symbols={symbol}&feed=iex"
+        )
+        if self.settings.is_live():
+            cred = (self.settings.alpaca_live_key, self.settings.alpaca_live_secret)
+        else:
+            cred = (self.settings.alpaca_paper_key, self.settings.alpaca_paper_secret)
+        auth = base64.b64encode(f"{cred[0]}:{cred[1]}".encode()).decode()
+        try:
+            r = subprocess.run(
+                ["curl", "-sS", "-H", f"Authorization: Basic {auth}", url],
+                capture_output=True, text=True, timeout=30,
+            )
+            data = _json.loads(r.stdout)
+        except Exception as e:
+            log.debug("get_stock_quote curl failed for %s: %s", symbol, e)
             return None
-        q = quote[symbol]
-        return {
-            "symbol": symbol,
-            "bid": float(q.bid_price),
-            "ask": float(q.ask_price),
-            "ts": q.timestamp.isoformat() if hasattr(q, "timestamp") else "",
-        }
+        q = data.get("quotes", {}).get(symbol)
+        if not q:
+            return None
+        try:
+            return {
+                "symbol": symbol,
+                "bid": float(q.get("bp", 0)),
+                "ask": float(q.get("ap", 0)),
+                "bid_size": int(q.get("bs", 0)),
+                "ask_size": int(q.get("as", 0)),
+                "ts": q.get("t", ""),
+            }
+        except (ValueError, TypeError) as e:
+            log.debug("get_stock_quote parse failed for %s: %s", symbol, e)
+            return None
 
     def get_stock_bars_minute(self, symbol: str, lookback_minutes: int) -> list[dict]:
         """1-minute bars for the last `lookback_minutes` minutes.
@@ -206,48 +235,63 @@ class BrokerClient:
         expiry_gte / expiry_lte are YYYY-MM-DD.
         option_type: "call", "put", or None (both). Defaults to "call"
         for backwards compat with long_call scanner; pass "put" for BPCS.
+
+        Paginates through all pages — single page is 100 contracts which
+        is not enough to see all expiries + strikes near the spot.
         """
         if option_type is None:
             option_type = "call"
-        req = GetOptionContractsRequest(
-            underlying_symbols=[underlying],
-            status="active",
-            expiration_date_gte=expiry_gte,
-            expiration_date_lte=expiry_lte,
-            type=option_type,
-        )
+        out = []
+        page_token = None
         try:
-            page = self.trading.get_option_contracts(req)
+            while True:
+                req = GetOptionContractsRequest(
+                    underlying_symbols=[underlying],
+                    status="active",
+                    expiration_date_gte=expiry_gte,
+                    expiration_date_lte=expiry_lte,
+                    type=option_type,
+                    limit=1000,
+                )
+                if page_token:
+                    req.page_token = page_token
+                page = self.trading.get_option_contracts(req)
+                contracts = list(page.option_contracts) if hasattr(page, "option_contracts") else []
+                for c in contracts:
+                    # c.expiration_date is a datetime.date object — normalize to YYYY-MM-DD string
+                    exp = c.expiration_date
+                    if hasattr(exp, "strftime"):
+                        exp_str = exp.strftime("%Y-%m-%d")
+                    else:
+                        exp_str = str(exp)
+                    out.append({
+                        "symbol": c.symbol,  # OCC code e.g. SPY260815C00770000
+                        "underlying": underlying,
+                        "expiry": exp_str,
+                        "strike": float(c.strike_price),
+                        "type": "call" if c.type.value == "call" else "put",
+                        "open_interest": int(c.open_interest or 0),
+                        "close_price": float(c.close_price) if c.close_price else None,
+                    })
+                page_token = getattr(page, "next_page_token", None)
+                if not page_token:
+                    break
         except Exception as e:
             log.warning("list_option_contracts failed for %s: %s", underlying, e)
-            return []
-        # page is an OptionContractsPage; iterate contracts
-        contracts = list(page.option_contracts) if hasattr(page, "option_contracts") else []
-        out = []
-        for c in contracts:
-            # c.expiration_date is a datetime.date object — normalize to YYYY-MM-DD string
-            exp = c.expiration_date
-            if hasattr(exp, "strftime"):
-                exp_str = exp.strftime("%Y-%m-%d")
-            else:
-                exp_str = str(exp)
-            out.append({
-                "symbol": c.symbol,  # OCC code e.g. SPY260815C00770000
-                "underlying": underlying,
-                "expiry": exp_str,
-                "strike": float(c.strike_price),
-                "type": "call" if c.type.value == "call" else "put",
-                "open_interest": int(c.open_interest or 0),
-                "close_price": float(c.close_price) if c.close_price else None,
-            })
         return out
 
-    def get_option_snapshot(self, contract_symbol: str) -> dict | None:
+    def get_option_snapshot(self, contract_symbol: str, expiry: str | None = None) -> dict | None:
         """Snapshot = latest quote. May return None if the symbol isn't in
         the underlying's snapshot page.
 
         The Alpaca paper option feed is `indicative` — no greeks, no IV. We
         return whatever bid/ask the feed has, or None.
+
+        Args:
+          contract_symbol: OCC contract symbol (e.g. SPY260918P00500000)
+          expiry: optional YYYY-MM-DD — if provided, narrows the snapshot
+            page to one expiry so the API returns strikes near spot instead
+            of the default first-1000 (which is mostly deep OTM/ITM).
         """
         import base64
         import subprocess
@@ -263,6 +307,8 @@ class BrokerClient:
             f"{self.settings.alpaca_data_base}/v1beta1/options/snapshots/{underlying}"
             f"?feed=indicative&limit=1000"
         )
+        if expiry:
+            url += f"&expiration_date={expiry}"
         if self.settings.is_live():
             cred = (self.settings.alpaca_live_key, self.settings.alpaca_live_secret)
         else:
@@ -378,6 +424,64 @@ class BrokerClient:
         )
         log.info("submit_open_sell %s qty=%d limit=%.2f coid=%s pos=%s",
                  contract_symbol, qty, limit_price, client_order_id, position_id)
+        return self.trading.submit_order(req)
+
+    def submit_credit_spread(
+        self,
+        short_put_symbol: str,
+        long_put_symbol: str,
+        short_put_limit: float,
+        long_put_limit: float,
+        qty: int,
+        client_order_id: str,
+        position_id: str,
+    ) -> AlpacaOrder:
+        """Submit a BULL PUT CREDIT SPREAD as a single multi-leg (MLEG) order.
+
+        This is the proper way to submit a spread — Alpaca applies spread
+        margin rules (max loss only) instead of cash-secured requirements
+        on each leg. The order consists of 2 legs:
+          - Short put: SELL_TO_OPEN at the bid (you receive premium)
+          - Long put: BUY_TO_OPEN at the ask (you pay premium)
+        The net credit is short_put_limit - long_put_limit (per share).
+
+        Uses GTC because BPCS targets 25-50 DTE — orders should survive
+        overnight to get a fill on the next session if not filled today.
+        """
+        from alpaca.trading.requests import OptionLegRequest
+        from alpaca.trading.enums import OrderClass, PositionIntent
+
+        # For a credit spread:
+        # - short_put_limit = price you SELL at (you get this as credit)
+        # - long_put_limit  = price you BUY at (you pay this)
+        # We set the order's limit_price to short_put_limit so the spread
+        # fills when the short put fills (mid for short, ask for long = NET CREDIT)
+        req = LimitOrderRequest(
+            order_class=OrderClass.MLEG,
+            qty=qty,
+            time_in_force=TimeInForce.GTC,
+            limit_price=round(short_put_limit - long_put_limit, 2),
+            client_order_id=client_order_id,
+            legs=[
+                OptionLegRequest(
+                    symbol=short_put_symbol,
+                    ratio_qty=1,
+                    side=OrderSide.SELL,
+                    position_intent=PositionIntent.SELL_TO_OPEN,
+                ),
+                OptionLegRequest(
+                    symbol=long_put_symbol,
+                    ratio_qty=1,
+                    side=OrderSide.BUY,
+                    position_intent=PositionIntent.BUY_TO_OPEN,
+                ),
+            ],
+        )
+        log.info(
+            "submit_credit_spread short=%s long=%s qty=%d net_limit=%.2f coid=%s pos=%s",
+            short_put_symbol, long_put_symbol, qty,
+            short_put_limit - long_put_limit, client_order_id, position_id,
+        )
         return self.trading.submit_order(req)
 
     def _tif_for_contract(self, contract_symbol: str) -> TimeInForce:

@@ -33,7 +33,7 @@ from typing import Literal
 class TradeEvent:
     event_id: str  # client_order_id from broker
     ts: str
-    kind: Literal["open", "close", "open_attempt", "close_attempt", "fill_partial"]
+    kind: Literal["open", "close", "open_attempt", "close_attempt", "fill_partial", "open_spread", "close_spread"]
     symbol: str
     side: Literal["buy", "sell"]
     qty: int

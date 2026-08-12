@@ -131,12 +131,17 @@ class Settings:
     # Allow up to $50 to handle SPY/QQQ/IBM/etc.
     bpcs_min_width: float = 2.0
     bpcs_max_width: float = 50.0
-    # Minimum credit as fraction of width (don't sell <33% premium)
-    bpcs_min_credit_pct_of_width: float = 0.33
+    # Minimum credit as fraction of width (don't sell <20% premium).
+    # 20% is a sensible floor — anything lower means you're selling
+    # too little premium relative to your max loss exposure.
+    bpcs_min_credit_pct_of_width: float = 0.20
     # Per-trade MAX LOSS cap (as fraction of equity) — this is the
     # REAL risk bound for a credit spread (not the credit received).
-    bpcs_max_loss_pct: float = 2.0
-    # Absolute max loss per spread in dollars
+    # 5% of equity is the canonical tastytrade cap; combined with the
+    # absolute cap below, the bot uses the SMALLER of the two.
+    bpcs_max_loss_pct: float = 5.0
+    # Absolute max loss per spread in dollars (safety floor for small
+    # equity accounts where 5% of equity is small)
     bpcs_max_loss_dollar: float = 600.0
     # Profit target: take profit at 50% of credit received
     bpcs_profit_target_pct: float = 0.50
@@ -240,9 +245,9 @@ class Settings:
             bpcs_min_width=_coerce_float(merged, "FOB_BPCS_MIN_WIDTH", 2.0),
             bpcs_max_width=_coerce_float(merged, "FOB_BPCS_MAX_WIDTH", 50.0),
             bpcs_min_credit_pct_of_width=_coerce_float(
-                merged, "FOB_BPCS_MIN_CREDIT_PCT_OF_WIDTH", 0.33
+                merged, "FOB_BPCS_MIN_CREDIT_PCT_OF_WIDTH", 0.20
             ),
-            bpcs_max_loss_pct=_coerce_float(merged, "FOB_BPCS_MAX_LOSS_PCT", 2.0),
+            bpcs_max_loss_pct=_coerce_float(merged, "FOB_BPCS_MAX_LOSS_PCT", 5.0),
             bpcs_max_loss_dollar=_coerce_float(merged, "FOB_BPCS_MAX_LOSS_DOLLAR", 600.0),
             bpcs_profit_target_pct=_coerce_float(merged, "FOB_BPCS_PROFIT_TARGET_PCT", 0.50),
             bpcs_close_at_dte=_coerce_int(merged, "FOB_BPCS_CLOSE_AT_DTE", 21),

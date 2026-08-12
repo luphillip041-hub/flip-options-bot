@@ -202,8 +202,8 @@ class Scanner:
         if not short_sym or not long_sym:
             return signals
 
-        short_snap = self.broker.get_option_snapshot(short_sym)
-        long_snap = self.broker.get_option_snapshot(long_sym)
+        short_snap = self.broker.get_option_snapshot(short_sym, expiry=expiry)
+        long_snap = self.broker.get_option_snapshot(long_sym, expiry=expiry)
         if not short_snap or not long_snap:
             return signals
         if not short_snap.get("bid") or not short_snap.get("ask"):
@@ -222,6 +222,8 @@ class Scanner:
             return signals
 
         # Filter: credit must be at least N% of spread width
+        # 20% is a sensible floor — anything lower means you're selling
+        # too little premium relative to your max loss exposure.
         if credit / spread_width < filters.min_credit_pct_of_width:
             return signals
 
@@ -332,7 +334,7 @@ class Scanner:
         # (vol crash). Don't buy premium in that regime.
         chain_spreads = []
         for c in eligible[:20]:  # sample up to 20 contracts for the regime check
-            snap = self.broker.get_option_snapshot(c["symbol"])
+            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
             if snap and snap.get("bid", 0) > 0 and snap.get("ask", 0) > 0:
                 mid = (snap["bid"] + snap["ask"]) / 2
                 spread_pct = (snap["ask"] - snap["bid"]) / max(mid, 0.01)
@@ -352,7 +354,7 @@ class Scanner:
         spot = (spot_quote["bid"] + spot_quote["ask"]) / 2
 
         for c in eligible:
-            snap = self.broker.get_option_snapshot(c["symbol"])
+            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
             if snap is None or "bid" not in snap or "ask" not in snap:
                 continue
             bid = float(snap["bid"])

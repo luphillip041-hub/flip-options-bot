@@ -52,7 +52,7 @@ def test_make_filters_from_settings_defaults():
     assert filters.max_dte == 50
     assert filters.min_width == 2.0
     assert filters.max_width == 50.0
-    assert filters.min_credit_pct_of_width == 0.33
+    assert filters.min_credit_pct_of_width == 0.20
 
 
 def test_make_filters_from_settings_custom():
@@ -67,7 +67,7 @@ def test_make_filters_from_settings_custom():
 
 
 def test_passes_dte_window():
-    f = BPCSFilters(target_dte=35, min_dte=25, max_dte=50, min_width=2.0, max_width=10.0, min_credit_pct_of_width=0.33)
+    f = BPCSFilters(target_dte=35, min_dte=25, max_dte=50, min_width=2.0, max_width=10.0, min_credit_pct_of_width=0.20)
     assert passes_dte_window(25, f) is True
     assert passes_dte_window(35, f) is True
     assert passes_dte_window(50, f) is True
@@ -76,7 +76,7 @@ def test_passes_dte_window():
 
 
 def test_passes_bpcs_conviction():
-    f = BPCSFilters(target_dte=35, min_dte=25, max_dte=50, min_width=2.0, max_width=10.0, min_credit_pct_of_width=0.33)
+    f = BPCSFilters(target_dte=35, min_dte=25, max_dte=50, min_width=2.0, max_width=10.0, min_credit_pct_of_width=0.20)
     assert passes_bpcs_conviction(0.50, f) is True
     assert passes_bpcs_conviction(0.40, f) is False  # below floor
 
@@ -126,17 +126,17 @@ def test_bpcs_signal_has_leg_estimates():
 def _make_risk(tmp_path: Path) -> RiskEngine:
     settings = Settings(
         phase='paper', live_trade_enabled=False, run_dir=tmp_path,
-        bpcs_max_loss_pct=2.0, bpcs_max_loss_dollar=600.0,
+        bpcs_max_loss_pct=5.0, bpcs_max_loss_dollar=600.0,
     )
     return RiskEngine(settings, tmp_path)
 
 
 def test_spread_gate_blocks_max_loss_pct(tmp_path: Path):
-    """max_loss > 2% of equity → blocked."""
+    """max_loss > 5% of equity → blocked."""
     risk = _make_risk(tmp_path)
     state = risk.load_state()
-    # equity=10000, 2% = $200; ask for $500 max loss
-    decision = risk.evaluate_pre_trade_spread(state, equity=10000.0, max_loss=500.0)
+    # equity=10000, 5% = $500; ask for $600 max loss
+    decision = risk.evaluate_pre_trade_spread(state, equity=10000.0, max_loss=600.0)
     assert decision.allowed is False
     assert 'bpcs_max_loss_pct' in decision.reason
 
@@ -174,22 +174,24 @@ def test_record_open_spread_does_not_subtract_debit(tmp_path: Path):
 # ===== Journal get_legs_for_position =====
 
 def test_get_legs_for_position_returns_multi(tmp_path: Path):
-    """For BPCS, both legs (sell + buy) should be tied to same position_id."""
+    """For multi-leg strategies (e.g. closing a spread), multiple events
+    can be tied to one position_id. A single MLEG open is just one event.
+    """
     journal = Journal(tmp_path)
     pid = journal.new_position_id()
-    # Write 2 events tied to same position
+    # Write 2 events tied to same position (e.g., partial fills)
     journal.append(TradeEvent(
         event_id='leg1', ts=journal.now_iso(), kind='open', symbol='SPY_PUT95',
         side='sell', qty=1, price=1.50, position_id=pid, strategy_id='bull_put_credit_spread',
     ))
     journal.append(TradeEvent(
-        event_id='leg2', ts=journal.now_iso(), kind='open', symbol='SPY_PUT90',
-        side='buy', qty=1, price=0.55, position_id=pid, strategy_id='bull_put_credit_spread',
+        event_id='leg2', ts=journal.now_iso(), kind='fill_partial', symbol='SPY_PUT95',
+        side='sell', qty=1, price=1.55, position_id=pid, strategy_id='bull_put_credit_spread',
     ))
     legs = journal.get_legs_for_position(pid)
     assert len(legs) == 2
     assert legs[0]['side'] == 'sell'
-    assert legs[1]['side'] == 'buy'
+    assert legs[1]['kind'] == 'fill_partial'
 
 
 # ===== Strategy registry =====
@@ -219,16 +221,14 @@ def test_get_strategy_bpcs():
 # ===== Executor submit_bull_put_spread (mocked broker) =====
 
 def test_executor_submit_bpcs_happy_path(tmp_path: Path):
-    """Both legs submit → journal writes → risk records."""
+    """MLEG spread order submitted → journal writes → risk records."""
     settings = Settings(
         phase='paper', live_trade_enabled=False, run_dir=tmp_path,
-        bpcs_max_loss_pct=2.0, bpcs_max_loss_dollar=600.0,
+        bpcs_max_loss_pct=5.0, bpcs_max_loss_dollar=600.0,
     )
     broker = MagicMock(spec=BrokerClient)
-    short_order = MagicMock(id='short-oid-1', status='ACCEPTED', submitted_at='now')
-    long_order = MagicMock(id='long-oid-1', status='ACCEPTED', submitted_at='now')
-    broker.submit_open_sell = MagicMock(return_value=short_order)
-    broker.submit_buy = MagicMock(return_value=long_order)
+    spread_order = MagicMock(id='spread-oid-1', status='ACCEPTED', submitted_at='now')
+    broker.submit_credit_spread = MagicMock(return_value=spread_order)
     broker.cancel_order = MagicMock()
 
     journal = Journal(tmp_path)
@@ -245,28 +245,30 @@ def test_executor_submit_bpcs_happy_path(tmp_path: Path):
         long_put_symbol='SPY260915P00090000',
     )
     result = executor.submit_bull_put_spread(
-        sig, equity=20000.0, state=state,  # 2% of 20000 = 400 > 350
+        sig, equity=20000.0, state=state,  # 5% of 20000 = 1000 > 350
         short_put_symbol='SPY260915P00095000',
         long_put_symbol='SPY260915P00090000',
     )
     assert result.accepted is True
     assert result.position_id != ''
-    assert 'bpcs-short-' in result.client_order_id
+    assert 'bpcs-spread-' in result.client_order_id
 
-    # Both orders should have been submitted
-    broker.submit_open_sell.assert_called_once()
-    broker.submit_buy.assert_called_once()
+    # MLEG order should have been submitted (single call, not 2 separate)
+    broker.submit_credit_spread.assert_called_once()
+    broker.submit_open_sell.assert_not_called()  # we use MLEG, not 2 separate orders
+    broker.submit_buy.assert_not_called()  # ditto
 
-    # Both events should be in the journal under same position_id
+    # Event recorded
     legs = journal.get_legs_for_position(result.position_id)
-    assert len(legs) == 2
+    assert len(legs) == 1
+    assert legs[0]['kind'] == 'open_spread'
 
 
-def test_executor_submit_bpcs_short_leg_fails(tmp_path: Path):
-    """If short-leg fails, no journal writes, no risk change."""
+def test_executor_submit_bpcs_mleg_fails(tmp_path: Path):
+    """If MLEG submit fails, no journal writes, no risk change."""
     settings = Settings(phase='paper', live_trade_enabled=False, run_dir=tmp_path)
     broker = MagicMock(spec=BrokerClient)
-    broker.submit_open_sell = MagicMock(side_effect=RuntimeError("broker error"))
+    broker.submit_credit_spread = MagicMock(side_effect=RuntimeError("broker error"))
 
     journal = Journal(tmp_path)
     risk = RiskEngine(settings, tmp_path)
@@ -282,22 +284,23 @@ def test_executor_submit_bpcs_short_leg_fails(tmp_path: Path):
         short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
     )
     result = executor.submit_bull_put_spread(
-        sig, equity=20000.0, state=state,  # 2% = 400 > 350
+        sig, equity=20000.0, state=state,  # 5% = 1000 > 350
         short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
     )
     assert result.accepted is False
-    assert 'broker_error_short' in result.reason
+    assert 'broker_error_mleg' in result.reason
     assert state.open_position_count == initial_count
 
 
-def test_executor_submit_bpcs_long_leg_fails_rolls_back_short(tmp_path: Path):
-    """If long-leg fails, short-leg must be cancelled (no naked short)."""
-    settings = Settings(phase='paper', live_trade_enabled=False, run_dir=tmp_path)
+def test_executor_submit_bpcs_mleg_event_has_both_legs_in_payload(tmp_path: Path):
+    """The journal event payload must contain both legs for audit trail."""
+    settings = Settings(
+        phase='paper', live_trade_enabled=False, run_dir=tmp_path,
+        bpcs_max_loss_pct=5.0, bpcs_max_loss_dollar=600.0,
+    )
     broker = MagicMock(spec=BrokerClient)
-    short_order = MagicMock(id='short-oid', status='ACCEPTED', submitted_at='now')
-    broker.submit_open_sell = MagicMock(return_value=short_order)
-    broker.submit_buy = MagicMock(side_effect=RuntimeError("broker error long"))
-    broker.cancel_order = MagicMock()
+    spread_order = MagicMock(id='spread-oid', status='ACCEPTED', submitted_at='now')
+    broker.submit_credit_spread = MagicMock(return_value=spread_order)
 
     journal = Journal(tmp_path)
     risk = RiskEngine(settings, tmp_path)
@@ -312,10 +315,16 @@ def test_executor_submit_bpcs_long_leg_fails_rolls_back_short(tmp_path: Path):
         short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
     )
     result = executor.submit_bull_put_spread(
-        sig, equity=20000.0, state=state,  # 2% = 400 > 350
+        sig, equity=20000.0, state=state,
         short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
     )
-    assert result.accepted is False
-    assert 'broker_error_long' in result.reason
-    # Critical: short leg should have been cancelled
-    broker.cancel_order.assert_called_once_with('short-oid')
+    assert result.accepted is True
+    legs = journal.get_legs_for_position(result.position_id)
+    assert len(legs) == 1
+    fill = legs[0].get('raw_broker_fill', {})
+    # The raw fill is JSON-encoded in the DB, so we need to load it
+    import json
+    fill_data = json.loads(fill) if isinstance(fill, str) else fill
+    assert fill_data.get('order_class') == 'MLEG'
+    assert fill_data.get('short_leg') == 'SPY_PUT95'
+    assert fill_data.get('long_leg') == 'SPY_PUT90'

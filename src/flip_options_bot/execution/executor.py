@@ -232,98 +232,71 @@ class Executor:
 
         # === Generate IDs ===
         position_id = Journal.new_position_id()
-        short_coid = f"bpcs-short-{uuid.uuid4()}"
-        long_coid = f"bpcs-long-{uuid.uuid4()}"
+        spread_coid = f"bpcs-spread-{uuid.uuid4()}"
 
-        # === Submit SHORT PUT (sell-to-open) at the ask ===
-        short_order = None
+        # === Submit the credit spread as a single MLEG order ===
+        # Using multi-leg (MLEG) is the proper way to submit a spread —
+        # Alpaca applies SPREAD margin rules (max loss only) instead of
+        # cash-secured requirements on each leg. Submitting two separate
+        # orders would treat each as a naked put and require 100x strike
+        # in buying power per leg.
+        spread_order = None
         try:
-            short_order = self.broker.submit_open_sell(
-                contract_symbol=short_put_symbol,
+            spread_order = self.broker.submit_credit_spread(
+                short_put_symbol=short_put_symbol,
+                long_put_symbol=long_put_symbol,
+                short_put_limit=signal.short_strike_price_estimate,
+                long_put_limit=signal.long_strike_price_estimate,
                 qty=decision.contracts,
-                limit_price=round(signal.short_strike_price_estimate, 2),  # see below
-                client_order_id=short_coid,
+                client_order_id=spread_coid,
                 position_id=position_id,
             )
         except Exception as e:
-            log.error("BPCS short-leg submit failed for %s: %s", short_put_symbol, e)
-            return ExecutionResult(accepted=False, reason=f"broker_error_short: {e}")
+            log.error("BPCS MLEG submit failed for %s/%s: %s",
+                      short_put_symbol, long_put_symbol, e)
+            return ExecutionResult(accepted=False, reason=f"broker_error_mleg: {e}")
 
-        # === Submit LONG PUT (buy-to-open) at the ask ===
-        long_order = None
-        try:
-            long_order = self.broker.submit_buy(
-                contract_symbol=long_put_symbol,
-                qty=decision.contracts,
-                limit_price=round(signal.long_strike_price_estimate, 2),
-                client_order_id=long_coid,
-                position_id=position_id,
-            )
-        except Exception as e:
-            log.error("BPCS long-leg submit failed for %s: %s", long_put_symbol, e)
-            # Try to cancel the short leg to avoid naked short
-            try:
-                self.broker.cancel_order(str(short_order.id))
-                log.warning("rolled back BPCS short leg %s after long leg failed", short_coid)
-            except Exception as ce:
-                log.error("could not roll back BPCS short leg: %s", ce)
-            return ExecutionResult(accepted=False, reason=f"broker_error_long: {e}")
-
-        # === Write journal events ===
-        # We record 2 events for full audit trail, both tied to position_id
-        short_event = TradeEvent(
-            event_id=short_coid,
+        # === Write journal event for the spread order ===
+        # We record one event for the spread (filled as one instrument).
+        # The audit trail can trace back to the MLEG via raw_broker_fill.
+        spread_event = TradeEvent(
+            event_id=spread_coid,
             ts=Journal.now_iso(),
-            kind="open",
-            symbol=short_put_symbol,
-            side="sell",
+            kind="open_spread",
+            symbol=f"BPCS:{short_put_symbol}/{long_put_symbol}",
+            side="sell",  # net side = credit received
             qty=decision.contracts,
-            price=signal.credit_estimate,  # short put sold at credit
+            price=signal.credit_estimate,
             position_id=position_id,
             strategy_id=signal.strategy_id,
             raw_broker_fill={
-                "order_id": str(short_order.id),
-                "status": str(short_order.status),
-                "leg": "short",
-                "submitted_at": str(short_order.submitted_at),
+                "order_id": str(spread_order.id),
+                "status": str(spread_order.status),
+                "order_class": "MLEG",
+                "short_leg": short_put_symbol,
+                "long_leg": long_put_symbol,
+                "submitted_at": str(spread_order.submitted_at),
             },
         )
-        long_event = TradeEvent(
-            event_id=long_coid,
-            ts=Journal.now_iso(),
-            kind="open",
-            symbol=long_put_symbol,
-            side="buy",
-            qty=decision.contracts,
-            price=signal.long_strike_price_estimate,
-            position_id=position_id,
-            strategy_id=signal.strategy_id,
-            raw_broker_fill={
-                "order_id": str(long_order.id),
-                "status": str(long_order.status),
-                "leg": "long",
-                "submitted_at": str(long_order.submitted_at),
-            },
-        )
-        self.journal.append(short_event)
-        self.journal.append(long_event)
+        self.journal.append(spread_event)
 
         # === Record in risk engine (track max_loss not debit!) ===
         self.risk.record_open_spread(
             state,
-            symbol=f"BPCS:{short_put_symbol}",
+            symbol=f"BPCS:{short_put_symbol}/{long_put_symbol}",
             max_loss=signal.max_loss_per_contract,
-            event_id=short_coid,
+            event_id=spread_coid,
         )
 
         log.info(
-            "BPCS submitted %s/%s qty=%d pos=%s short_coid=%s long_coid=%s max_loss=$%.0f credit=$%.2f",
+            "BPCS submitted %s/%s qty=%d pos=%s coid=%s max_loss=$%.0f credit=$%.2f status=%s",
             short_put_symbol, long_put_symbol, decision.contracts, position_id,
-            short_coid, long_coid, signal.max_loss_per_contract, signal.credit_estimate,
+            spread_coid, signal.max_loss_per_contract, signal.credit_estimate,
+            spread_order.status,
         )
         return ExecutionResult(
             accepted=True,
-            client_order_id=short_coid,
+            client_order_id=spread_coid,
             position_id=position_id,
         )
 
