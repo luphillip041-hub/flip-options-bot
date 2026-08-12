@@ -127,6 +127,15 @@ def run_once(
              len(result.candidates),
              result.funnel_row.dominant_skip_reason)
 
+    # Step 2b: BPCS scan (parallel, only if enabled)
+    bpcs_result = None
+    if settings.bpcs_enabled:
+        bpcs_result = scanner.scan_bpcs(watchlist)
+        log.info("bpcs scan %s: candidates=%d skip=%s",
+                 bpcs_result.funnel_row.scan_id[:8],
+                 len(bpcs_result.candidates),
+                 bpcs_result.funnel_row.dominant_skip_reason)
+
     # Step 3: gate each candidate through risk + executor
     if settings.is_live():
         log.warning("LIVE MODE: scaffold executor will reject (confirm_live=False)")
@@ -146,6 +155,23 @@ def run_once(
             if "kill_switch" in exec_result.reason:
                 log.warning("kill switch tripped — stopping scan cycle")
                 break
+
+    # Step 3b: gate each BPCS candidate
+    if bpcs_result is not None:
+        for sig in bpcs_result.candidates:
+            fresh_state = risk.load_state()
+            exec_result = executor.submit_bull_put_spread(
+                sig, equity=equity, state=fresh_state,
+                short_put_symbol=sig.short_put_symbol,
+                long_put_symbol=sig.long_put_symbol,
+            )
+            if exec_result.accepted:
+                submitted += 1
+            else:
+                reasons.append(f"BPCS {sig.short_strike}/{sig.long_strike}:{exec_result.reason[:30]}")
+                if "kill_switch" in exec_result.reason:
+                    log.warning("kill switch tripped — stopping scan cycle")
+                    break
 
     return {
         "scan_id": result.funnel_row.scan_id,

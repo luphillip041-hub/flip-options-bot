@@ -189,8 +189,8 @@ def test_is_strong_setup():
 
 def test_bpcs_select_strikes():
     short, long = select_strikes(spot=100.0)
-    assert short == 95.0  # 5% OTM
-    assert long == 90.0   # 10% OTM
+    assert short == 98.0  # 2% OTM
+    assert long == 96.0   # 4% OTM
     assert short > long
 
 

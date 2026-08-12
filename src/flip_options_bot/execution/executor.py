@@ -25,6 +25,7 @@ from ..broker import BrokerClient
 from ..config import Settings
 from ..journal import Journal, TradeEvent
 from ..risk import RiskEngine, RiskState
+from ..strategies.bull_put_credit import BullPutSpreadSignal
 from ..strategies.long_call import LongCallSignal
 
 log = logging.getLogger("flip_options_bot.executor")
@@ -194,7 +195,139 @@ class Executor:
             position_id=position_id,
         )
 
-    def _confirm_live(self, signal: LongCallSignal) -> bool:
+    def submit_bull_put_spread(
+        self,
+        signal: BullPutSpreadSignal,
+        equity: float,
+        state: RiskState,
+        short_put_symbol: str,
+        long_put_symbol: str,
+    ) -> ExecutionResult:
+        """Submit a 2-leg bull put credit spread.
+
+        Workflow:
+          1. Risk gate: check max_loss (not debit!) against bpcs_max_loss_*
+          2. Submit SHORT PUT sell-to-open at ask
+          3. Submit LONG PUT buy-to-open at ask
+          4. Write 2 journal events (open_sell + open_buy) linked by position_id
+          5. Record open in risk engine with the MAX LOSS (not debit!)
+
+        Both legs are submitted with GTC (BPCS targets 25-50 DTE).
+        """
+        if signal.strategy_id != "bull_put_credit_spread":
+            return ExecutionResult(accepted=False, reason=f"unknown strategy {signal.strategy_id}")
+
+        # === Risk gate: check max_loss against bpcs_max_loss_* ===
+        decision = self.risk.evaluate_pre_trade_spread(
+            state, equity=equity, max_loss=signal.max_loss_per_contract,
+        )
+        if not decision.allowed:
+            log.info("risk denied BPCS %s/%s: %s", short_put_symbol, long_put_symbol, decision.reason)
+            return ExecutionResult(accepted=False, reason=decision.reason)
+
+        # === Live mode double-check ===
+        if self.settings.is_live() and not self._confirm_live(signal):
+            log.warning("live mode but confirm_live denied; aborting BPCS")
+            return ExecutionResult(accepted=False, reason="live_confirm_denied")
+
+        # === Generate IDs ===
+        position_id = Journal.new_position_id()
+        short_coid = f"bpcs-short-{uuid.uuid4()}"
+        long_coid = f"bpcs-long-{uuid.uuid4()}"
+
+        # === Submit SHORT PUT (sell-to-open) at the ask ===
+        short_order = None
+        try:
+            short_order = self.broker.submit_open_sell(
+                contract_symbol=short_put_symbol,
+                qty=decision.contracts,
+                limit_price=round(signal.short_strike_price_estimate, 2),  # see below
+                client_order_id=short_coid,
+                position_id=position_id,
+            )
+        except Exception as e:
+            log.error("BPCS short-leg submit failed for %s: %s", short_put_symbol, e)
+            return ExecutionResult(accepted=False, reason=f"broker_error_short: {e}")
+
+        # === Submit LONG PUT (buy-to-open) at the ask ===
+        long_order = None
+        try:
+            long_order = self.broker.submit_buy(
+                contract_symbol=long_put_symbol,
+                qty=decision.contracts,
+                limit_price=round(signal.long_strike_price_estimate, 2),
+                client_order_id=long_coid,
+                position_id=position_id,
+            )
+        except Exception as e:
+            log.error("BPCS long-leg submit failed for %s: %s", long_put_symbol, e)
+            # Try to cancel the short leg to avoid naked short
+            try:
+                self.broker.cancel_order(str(short_order.id))
+                log.warning("rolled back BPCS short leg %s after long leg failed", short_coid)
+            except Exception as ce:
+                log.error("could not roll back BPCS short leg: %s", ce)
+            return ExecutionResult(accepted=False, reason=f"broker_error_long: {e}")
+
+        # === Write journal events ===
+        # We record 2 events for full audit trail, both tied to position_id
+        short_event = TradeEvent(
+            event_id=short_coid,
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol=short_put_symbol,
+            side="sell",
+            qty=decision.contracts,
+            price=signal.credit_estimate,  # short put sold at credit
+            position_id=position_id,
+            strategy_id=signal.strategy_id,
+            raw_broker_fill={
+                "order_id": str(short_order.id),
+                "status": str(short_order.status),
+                "leg": "short",
+                "submitted_at": str(short_order.submitted_at),
+            },
+        )
+        long_event = TradeEvent(
+            event_id=long_coid,
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol=long_put_symbol,
+            side="buy",
+            qty=decision.contracts,
+            price=signal.long_strike_price_estimate,
+            position_id=position_id,
+            strategy_id=signal.strategy_id,
+            raw_broker_fill={
+                "order_id": str(long_order.id),
+                "status": str(long_order.status),
+                "leg": "long",
+                "submitted_at": str(long_order.submitted_at),
+            },
+        )
+        self.journal.append(short_event)
+        self.journal.append(long_event)
+
+        # === Record in risk engine (track max_loss not debit!) ===
+        self.risk.record_open_spread(
+            state,
+            symbol=f"BPCS:{short_put_symbol}",
+            max_loss=signal.max_loss_per_contract,
+            event_id=short_coid,
+        )
+
+        log.info(
+            "BPCS submitted %s/%s qty=%d pos=%s short_coid=%s long_coid=%s max_loss=$%.0f credit=$%.2f",
+            short_put_symbol, long_put_symbol, decision.contracts, position_id,
+            short_coid, long_coid, signal.max_loss_per_contract, signal.credit_estimate,
+        )
+        return ExecutionResult(
+            accepted=True,
+            client_order_id=short_coid,
+            position_id=position_id,
+        )
+
+    def _confirm_live(self, signal) -> bool:
         """Operator-supplied confirmation hook. Default: always reject live.
 
         In production, this would be wired to a Discord-confirmation channel

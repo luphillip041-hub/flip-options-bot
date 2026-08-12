@@ -315,6 +315,23 @@ class Journal:
         cols = [c[0] for c in cur.description]
         return dict(zip(cols, row))
 
+    def get_legs_for_position(self, position_id: str) -> list[dict]:
+        """Return all trade events tied to a position_id.
+
+        For BPCS this returns the 2 legs (short + long). For long_call
+        this returns the open + (optionally) close.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute(
+                "SELECT * FROM trades WHERE position_id = ? ORDER BY ts",
+                (position_id,),
+            )
+            rows = cur.fetchall()
+        if not rows:
+            return []
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in rows]
+
     def has_event(self, event_id: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             return conn.execute(

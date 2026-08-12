@@ -20,6 +20,16 @@ from typing import Literal
 from ..broker import BrokerClient
 from ..config import Settings
 from ..signal import FunnelRecorder, FunnelRow
+from ..strategies.bull_put_credit import (
+    BPCSFilters,
+    BullPutSpreadSignal,
+    compute_bpcs_conviction,
+    estimate_credit,
+    make_filters_from_settings as make_bpcs_filters,
+    passes_bpcs_conviction,
+    pick_target_expiry as pick_bpcs_expiry,
+    select_strikes,
+)
 from ..strategies.long_call import (
     LongCallFilters,
     LongCallSignal,
@@ -37,6 +47,12 @@ log = logging.getLogger("flip_options_bot.scanner")
 class ScanResult:
     funnel_row: FunnelRow
     candidates: list[LongCallSignal]
+
+
+@dataclass
+class BPCSScanResult:
+    funnel_row: FunnelRow
+    candidates: list[BullPutSpreadSignal]
 
 
 class Scanner:
@@ -85,6 +101,180 @@ class Scanner:
             log.warning("duplicate scan_id %s not re-emitted", row.scan_id)
 
         return ScanResult(funnel_row=row, candidates=candidates)
+
+    def scan_bpcs(self, watchlist: list[str]) -> BPCSScanResult:
+        """BPCS scan over the watchlist. Emits BullPutSpreadSignals.
+
+        Bull put credit spreads profit on NEUTRAL or DOWN moves. We scan
+        even when direction_move is negative — that's the whole point.
+        Returns 0 candidates if direction is strongly bearish or no
+        credit spreads meet conviction threshold.
+        """
+        filters = make_bpcs_filters(self.settings)
+        row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
+        candidates: list[BullPutSpreadSignal] = []
+        now = datetime.now(timezone.utc)
+
+        for symbol in watchlist:
+            try:
+                signals = self._scan_bpcs_symbol(symbol, filters, now)
+            except Exception as e:
+                log.warning("bpcs scan failed for %s: %s", symbol, e)
+                row.chains_failed.append(symbol)
+                continue
+            row.chains_fetched.append(symbol)
+            for s in signals:
+                candidates.append(s)
+                row.raw_signal_count += 1
+
+        row.sized_count = len(candidates)
+        row.submitted_count = 0
+        row.conviction_distribution = [round(c.conviction, 3) for c in candidates]
+        if not candidates:
+            row.dominant_skip_reason = "no_candidates"
+        else:
+            row.dominant_skip_reason = "ok"
+
+        emitted = self.funnel.emit(row)
+        if not emitted:
+            log.warning("duplicate bpcs scan_id %s not re-emitted", row.scan_id)
+        return BPCSScanResult(funnel_row=row, candidates=candidates)
+
+    def _scan_bpcs_symbol(
+        self, symbol: str, filters: BPCSFilters, now: datetime
+    ) -> list[BullPutSpreadSignal]:
+        """Find bull put credit spread candidates on a single symbol."""
+        signals: list[BullPutSpreadSignal] = []
+
+        # Pull minute bars to check direction. BPCS wants neutral or
+        # slightly bearish — strongly bullish means we should sell
+        # upside (not downside) so we skip.
+        bars = self.broker.get_stock_bars_minute(symbol, lookback_minutes=60)
+        if len(bars) < 30:
+            return signals
+        closes = [b["c"] for b in bars[-30:]]
+        direction_move = (closes[-1] - closes[0]) / closes[0]
+        spot = closes[-1]
+
+        # BPCS wants bullish OR neutral. Strongly down → skip.
+        # (Conviction check below will also block if too bearish.)
+        if direction_move < -0.005:  # -0.5% in 30 min = too bearish
+            return signals
+
+        # Pick expiry closest to target_dte
+        expiry_gte = (now + timedelta(days=filters.min_dte)).strftime("%Y-%m-%d")
+        expiry_lte = (now + timedelta(days=filters.max_dte)).strftime("%Y-%m-%d")
+        contracts = self.broker.list_option_contracts(symbol, expiry_gte, expiry_lte, option_type="put")
+        if not contracts:
+            return signals
+        expiry_set = sorted({c["expiry"] for c in contracts})
+        expiry = pick_bpcs_expiry(expiry_set, filters)
+        if expiry is None:
+            return signals
+        dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
+
+        # Pick strikes by delta proxy. Pass available_strikes so we can snap
+        # to the closest available strike when Alpaca paper's chain is
+        # incomplete near the spot price.
+        all_strikes = sorted({c["strike"] for c in contracts if c["type"] == "put"})
+        strike_pair = select_strikes(spot, available_strikes=all_strikes)
+        if strike_pair is None:
+            return signals
+        short_strike, long_strike = strike_pair
+        spread_width = short_strike - long_strike
+        if spread_width < filters.min_width or spread_width > filters.max_width:
+            return signals
+
+        # Find the matching put contracts (need short put + long put same expiry)
+        eligible_puts = [
+            c for c in contracts
+            if c["expiry"] == expiry
+            and c["type"] == "put"
+            and c["open_interest"] > 0
+            and c["strike"] in {short_strike, long_strike}
+        ]
+        if len(eligible_puts) < 2:
+            return signals
+
+        # Pull snapshots for both legs
+        short_sym = next((c["symbol"] for c in eligible_puts if c["strike"] == short_strike), None)
+        long_sym = next((c["symbol"] for c in eligible_puts if c["strike"] == long_strike), None)
+        if not short_sym or not long_sym:
+            return signals
+
+        short_snap = self.broker.get_option_snapshot(short_sym)
+        long_snap = self.broker.get_option_snapshot(long_sym)
+        if not short_snap or not long_snap:
+            return signals
+        if not short_snap.get("bid") or not short_snap.get("ask"):
+            return signals
+        if not long_snap.get("bid") or not long_snap.get("ask"):
+            return signals
+
+        # Compute credit
+        credit = estimate_credit(
+            short_put_bid=float(short_snap["bid"]),
+            short_put_ask=float(short_snap["ask"]),
+            long_put_bid=float(long_snap["bid"]),
+            long_put_ask=float(long_snap["ask"]),
+        )
+        if credit <= 0:
+            return signals
+
+        # Filter: credit must be at least N% of spread width
+        if credit / spread_width < filters.min_credit_pct_of_width:
+            return signals
+
+        # Vol regime: BPCS wants rich vol. Use short-put IV width proxy.
+        spread_pct = (float(short_snap["ask"]) - float(short_snap["bid"])) / max((float(short_snap["bid"]) + float(short_snap["ask"])) / 2, 0.01)
+        # For BPCS we tolerate wider spreads (we're a seller, not buyer)
+        if spread_pct > 0.40:  # 40% cap — stricter than long_call
+            return signals
+
+        # IV proxy from short put (rough — assumes ATM-ish short put)
+        iv_rank_proxy = 0.30  # placeholder; real calc would use ATM straddle
+        # Use spread_pct as a weak IV proxy: wider spread ≈ richer vol
+        if spread_pct > 0.15:
+            iv_rank_proxy = 0.40
+        elif spread_pct < 0.05:
+            iv_rank_proxy = 0.10
+
+        conviction = compute_bpcs_conviction(
+            spot=spot,
+            short_strike=short_strike,
+            long_strike=long_strike,
+            credit=credit,
+            iv_rank_proxy=iv_rank_proxy,
+            direction_move_pct=direction_move,
+            filters=filters,
+        )
+        if not passes_bpcs_conviction(conviction, filters):
+            return signals
+
+        max_loss_per_contract = spread_width * 100 - credit * 100
+        # Use mid + 25% spread above mid for short put (to get a fill),
+        # and mid + 25% spread above mid for long put (to get a fill).
+        # These are intentionally aggressive (a tiny bit over mid) so
+        # the spread fills within a few minutes in paper.
+        short_put_price = round(float(short_snap["bid"]) + 0.50 * (float(short_snap["ask"]) - float(short_snap["bid"])), 2)
+        long_put_price = round(float(long_snap["ask"]) + 0.10 * (float(long_snap["ask"]) - float(long_snap["bid"])), 2)
+        signals.append(BullPutSpreadSignal(
+            short_strike=short_strike,
+            long_strike=long_strike,
+            expiry=expiry,
+            credit_estimate=credit,
+            max_loss_per_contract=max_loss_per_contract,
+            max_gain_per_contract=credit * 100,
+            pop=0.70,  # rough — short put at 30 delta has ~70% POP
+            conviction=conviction,
+            short_strike_price_estimate=short_put_price,
+            long_strike_price_estimate=long_put_price,
+            short_put_symbol=short_sym,
+            long_put_symbol=long_sym,
+            strategy_id="bull_put_credit_spread",
+            ts=now.isoformat(),
+        ))
+        return signals
 
     # ===== Internals =====
 

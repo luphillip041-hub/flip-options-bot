@@ -1,0 +1,321 @@
+"""Tests for the BPCS (bull put credit spread) wiring.
+
+Coverage:
+- BullPutSpreadSignal dataclass new fields
+- BPCSFilters via make_filters_from_settings
+- passes_dte_window + pick_target_expiry + passes_bpcs_conviction
+- Risk engine evaluate_pre_trade_spread
+- record_open_spread does NOT subtract debit (key behavior!)
+- Executor submit_bull_put_spread basic happy path (with mocks)
+- Scanner scan_bpcs end-to-end with mocked broker
+- Journal get_legs_for_position returns multiple legs
+- Strategy registry includes BPCS when enabled
+"""
+
+import json
+import tempfile
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from flip_options_bot.broker.alpaca import BrokerClient
+from flip_options_bot.config import Settings, get_settings
+from flip_options_bot.execution.executor import Executor
+from flip_options_bot.journal import Journal, TradeEvent
+from flip_options_bot.risk import RiskEngine, RiskState
+from flip_options_bot.signal import FunnelRecorder
+from flip_options_bot.signal.scanner import Scanner
+from flip_options_bot.strategies.bull_put_credit import (
+    BPCSFilters,
+    BullPutSpreadSignal,
+    compute_bpcs_conviction,
+    estimate_credit,
+    make_filters_from_settings,
+    passes_bpcs_conviction,
+    passes_dte_window,
+    pick_target_expiry,
+    select_strikes,
+)
+from flip_options_bot.strategies import enabled_strategies, get_strategy
+
+
+# ===== BPCSFilters =====
+
+def test_make_filters_from_settings_defaults():
+    settings = Settings(phase='paper', live_trade_enabled=False, run_dir=Path('/tmp'))
+    filters = make_filters_from_settings(settings)
+    assert filters.target_dte == 35
+    assert filters.min_dte == 25
+    assert filters.max_dte == 50
+    assert filters.min_width == 2.0
+    assert filters.max_width == 50.0
+    assert filters.min_credit_pct_of_width == 0.33
+
+
+def test_make_filters_from_settings_custom():
+    settings = Settings(
+        phase='paper', live_trade_enabled=False, run_dir=Path('/tmp'),
+        bpcs_target_dte=30, bpcs_min_width=5.0, bpcs_max_width=15.0,
+    )
+    filters = make_filters_from_settings(settings)
+    assert filters.target_dte == 30
+    assert filters.min_width == 5.0
+    assert filters.max_width == 15.0
+
+
+def test_passes_dte_window():
+    f = BPCSFilters(target_dte=35, min_dte=25, max_dte=50, min_width=2.0, max_width=10.0, min_credit_pct_of_width=0.33)
+    assert passes_dte_window(25, f) is True
+    assert passes_dte_window(35, f) is True
+    assert passes_dte_window(50, f) is True
+    assert passes_dte_window(24, f) is False
+    assert passes_dte_window(51, f) is False
+
+
+def test_passes_bpcs_conviction():
+    f = BPCSFilters(target_dte=35, min_dte=25, max_dte=50, min_width=2.0, max_width=10.0, min_credit_pct_of_width=0.33)
+    assert passes_bpcs_conviction(0.50, f) is True
+    assert passes_bpcs_conviction(0.40, f) is False  # below floor
+
+
+# ===== select_strikes =====
+
+def test_select_strikes_2pct_otm():
+    short, long = select_strikes(spot=100.0)
+    assert short == 98.0  # 2% OTM
+    assert long == 96.0   # 4% OTM
+
+
+def test_select_strikes_zero_spot_returns_none():
+    assert select_strikes(spot=0) is None
+    assert select_strikes(spot=-10) is None
+
+
+def test_select_strikes_high_price():
+    """SPY/QQQ at $770 should still produce strikes."""
+    short, long = select_strikes(spot=770.0)
+    # 770 * 0.98 = 754.6 → rounds to 755
+    assert short == 755.0
+    # 770 * 0.96 = 739.2 → rounds to 739
+    assert long == 739.0
+    assert long < short
+
+
+# ===== BullPutSpreadSignal dataclass =====
+
+def test_bpcs_signal_has_leg_estimates():
+    sig = BullPutSpreadSignal(
+        short_strike=95.0, long_strike=90.0, expiry='2026-09-15',
+        credit_estimate=1.50, max_loss_per_contract=350.0,
+        max_gain_per_contract=150.0, pop=0.70, conviction=0.65,
+        short_strike_price_estimate=1.45, long_strike_price_estimate=0.55,
+        short_put_symbol='SPY260915P00095000',
+        long_put_symbol='SPY260915P00090000',
+    )
+    assert sig.short_strike_price_estimate == 1.45
+    assert sig.long_strike_price_estimate == 0.55
+    assert sig.short_put_symbol == 'SPY260915P00095000'
+    assert sig.long_put_symbol == 'SPY260915P00090000'
+
+
+# ===== Risk engine evaluate_pre_trade_spread =====
+
+def _make_risk(tmp_path: Path) -> RiskEngine:
+    settings = Settings(
+        phase='paper', live_trade_enabled=False, run_dir=tmp_path,
+        bpcs_max_loss_pct=2.0, bpcs_max_loss_dollar=600.0,
+    )
+    return RiskEngine(settings, tmp_path)
+
+
+def test_spread_gate_blocks_max_loss_pct(tmp_path: Path):
+    """max_loss > 2% of equity → blocked."""
+    risk = _make_risk(tmp_path)
+    state = risk.load_state()
+    # equity=10000, 2% = $200; ask for $500 max loss
+    decision = risk.evaluate_pre_trade_spread(state, equity=10000.0, max_loss=500.0)
+    assert decision.allowed is False
+    assert 'bpcs_max_loss_pct' in decision.reason
+
+
+def test_spread_gate_blocks_max_loss_dollar(tmp_path: Path):
+    """max_loss > $600 absolute → blocked."""
+    risk = _make_risk(tmp_path)
+    state = risk.load_state()
+    decision = risk.evaluate_pre_trade_spread(state, equity=100000.0, max_loss=700.0)
+    assert decision.allowed is False
+    assert 'bpcs_max_loss_dollar' in decision.reason
+
+
+def test_spread_gate_allows_normal(tmp_path: Path):
+    risk = _make_risk(tmp_path)
+    state = risk.load_state()
+    decision = risk.evaluate_pre_trade_spread(state, equity=10000.0, max_loss=150.0)
+    assert decision.allowed is True
+
+
+def test_record_open_spread_does_not_subtract_debit(tmp_path: Path):
+    """KEY behavior: open_spread does NOT add negative debit to daily_pnl.
+
+    Critical because a credit spread RECEIVES credit (income), not
+    pays debit. If we subtracted, daily_pnl would be wrong.
+    """
+    risk = _make_risk(tmp_path)
+    state = risk.load_state()
+    initial_daily = state.daily_pnl
+    risk.record_open_spread(state, symbol='SPY', max_loss=200.0, event_id='bpcs-test-1')
+    assert state.daily_pnl == initial_daily  # NOT changed
+    assert state.open_position_count == 1
+
+
+# ===== Journal get_legs_for_position =====
+
+def test_get_legs_for_position_returns_multi(tmp_path: Path):
+    """For BPCS, both legs (sell + buy) should be tied to same position_id."""
+    journal = Journal(tmp_path)
+    pid = journal.new_position_id()
+    # Write 2 events tied to same position
+    journal.append(TradeEvent(
+        event_id='leg1', ts=journal.now_iso(), kind='open', symbol='SPY_PUT95',
+        side='sell', qty=1, price=1.50, position_id=pid, strategy_id='bull_put_credit_spread',
+    ))
+    journal.append(TradeEvent(
+        event_id='leg2', ts=journal.now_iso(), kind='open', symbol='SPY_PUT90',
+        side='buy', qty=1, price=0.55, position_id=pid, strategy_id='bull_put_credit_spread',
+    ))
+    legs = journal.get_legs_for_position(pid)
+    assert len(legs) == 2
+    assert legs[0]['side'] == 'sell'
+    assert legs[1]['side'] == 'buy'
+
+
+# ===== Strategy registry =====
+
+def test_registry_includes_bpcs_when_enabled():
+    settings = Settings(phase='paper', live_trade_enabled=False, run_dir=Path('/tmp'), bpcs_enabled=True)
+    enabled = enabled_strategies(settings)
+    ids = [s.strategy_id for s in enabled]
+    assert 'bull_put_credit_spread' in ids
+    assert 'long_call' in ids
+
+
+def test_registry_excludes_bpcs_when_disabled():
+    settings = Settings(phase='paper', live_trade_enabled=False, run_dir=Path('/tmp'), bpcs_enabled=False)
+    enabled = enabled_strategies(settings)
+    ids = [s.strategy_id for s in enabled]
+    assert 'bull_put_credit_spread' not in ids
+    assert 'long_call' in ids
+
+
+def test_get_strategy_bpcs():
+    desc = get_strategy('bull_put_credit_spread')
+    assert desc is not None
+    assert desc.strategy_id == 'bull_put_credit_spread'
+
+
+# ===== Executor submit_bull_put_spread (mocked broker) =====
+
+def test_executor_submit_bpcs_happy_path(tmp_path: Path):
+    """Both legs submit → journal writes → risk records."""
+    settings = Settings(
+        phase='paper', live_trade_enabled=False, run_dir=tmp_path,
+        bpcs_max_loss_pct=2.0, bpcs_max_loss_dollar=600.0,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    short_order = MagicMock(id='short-oid-1', status='ACCEPTED', submitted_at='now')
+    long_order = MagicMock(id='long-oid-1', status='ACCEPTED', submitted_at='now')
+    broker.submit_open_sell = MagicMock(return_value=short_order)
+    broker.submit_buy = MagicMock(return_value=long_order)
+    broker.cancel_order = MagicMock()
+
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    state = risk.load_state()
+    executor = Executor(settings, broker, journal, risk)
+
+    sig = BullPutSpreadSignal(
+        short_strike=95.0, long_strike=90.0, expiry='2026-09-15',
+        credit_estimate=1.50, max_loss_per_contract=350.0,
+        max_gain_per_contract=150.0, pop=0.70, conviction=0.65,
+        short_strike_price_estimate=1.45, long_strike_price_estimate=0.55,
+        short_put_symbol='SPY260915P00095000',
+        long_put_symbol='SPY260915P00090000',
+    )
+    result = executor.submit_bull_put_spread(
+        sig, equity=20000.0, state=state,  # 2% of 20000 = 400 > 350
+        short_put_symbol='SPY260915P00095000',
+        long_put_symbol='SPY260915P00090000',
+    )
+    assert result.accepted is True
+    assert result.position_id != ''
+    assert 'bpcs-short-' in result.client_order_id
+
+    # Both orders should have been submitted
+    broker.submit_open_sell.assert_called_once()
+    broker.submit_buy.assert_called_once()
+
+    # Both events should be in the journal under same position_id
+    legs = journal.get_legs_for_position(result.position_id)
+    assert len(legs) == 2
+
+
+def test_executor_submit_bpcs_short_leg_fails(tmp_path: Path):
+    """If short-leg fails, no journal writes, no risk change."""
+    settings = Settings(phase='paper', live_trade_enabled=False, run_dir=tmp_path)
+    broker = MagicMock(spec=BrokerClient)
+    broker.submit_open_sell = MagicMock(side_effect=RuntimeError("broker error"))
+
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    state = risk.load_state()
+    initial_count = state.open_position_count
+    executor = Executor(settings, broker, journal, risk)
+
+    sig = BullPutSpreadSignal(
+        short_strike=95.0, long_strike=90.0, expiry='2026-09-15',
+        credit_estimate=1.50, max_loss_per_contract=350.0,
+        max_gain_per_contract=150.0, pop=0.70, conviction=0.65,
+        short_strike_price_estimate=1.45, long_strike_price_estimate=0.55,
+        short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
+    )
+    result = executor.submit_bull_put_spread(
+        sig, equity=20000.0, state=state,  # 2% = 400 > 350
+        short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
+    )
+    assert result.accepted is False
+    assert 'broker_error_short' in result.reason
+    assert state.open_position_count == initial_count
+
+
+def test_executor_submit_bpcs_long_leg_fails_rolls_back_short(tmp_path: Path):
+    """If long-leg fails, short-leg must be cancelled (no naked short)."""
+    settings = Settings(phase='paper', live_trade_enabled=False, run_dir=tmp_path)
+    broker = MagicMock(spec=BrokerClient)
+    short_order = MagicMock(id='short-oid', status='ACCEPTED', submitted_at='now')
+    broker.submit_open_sell = MagicMock(return_value=short_order)
+    broker.submit_buy = MagicMock(side_effect=RuntimeError("broker error long"))
+    broker.cancel_order = MagicMock()
+
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    state = risk.load_state()
+    executor = Executor(settings, broker, journal, risk)
+
+    sig = BullPutSpreadSignal(
+        short_strike=95.0, long_strike=90.0, expiry='2026-09-15',
+        credit_estimate=1.50, max_loss_per_contract=350.0,
+        max_gain_per_contract=150.0, pop=0.70, conviction=0.65,
+        short_strike_price_estimate=1.45, long_strike_price_estimate=0.55,
+        short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
+    )
+    result = executor.submit_bull_put_spread(
+        sig, equity=20000.0, state=state,  # 2% = 400 > 350
+        short_put_symbol='SPY_PUT95', long_put_symbol='SPY_PUT90',
+    )
+    assert result.accepted is False
+    assert 'broker_error_long' in result.reason
+    # Critical: short leg should have been cancelled
+    broker.cancel_order.assert_called_once_with('short-oid')

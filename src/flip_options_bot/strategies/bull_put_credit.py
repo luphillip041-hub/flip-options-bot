@@ -32,6 +32,67 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from ..config import Settings
+
+
+@dataclass
+class BPCSFilters:
+    """Filter set for BPCS, sourced from Settings."""
+    target_dte: int
+    min_dte: int
+    max_dte: int
+    min_width: float
+    max_width: float
+    min_credit_pct_of_width: float
+    min_conviction: float = 0.45
+
+
+def make_filters_from_settings(settings: Settings) -> BPCSFilters:
+    """Build BPCSFilters from runtime Settings."""
+    return BPCSFilters(
+        target_dte=settings.bpcs_target_dte,
+        min_dte=settings.bpcs_min_dte,
+        max_dte=settings.bpcs_max_dte,
+        min_width=settings.bpcs_min_width,
+        max_width=settings.bpcs_max_width,
+        min_credit_pct_of_width=settings.bpcs_min_credit_pct_of_width,
+    )
+
+
+def passes_dte_window(dte: int, filters: BPCSFilters) -> bool:
+    """A candidate's DTE must be within the configured window."""
+    return filters.min_dte <= dte <= filters.max_dte
+
+
+def pick_target_expiry(available_expiries: list[str], filters: BPCSFilters) -> str | None:
+    """Pick the expiry closest to `target_dte`, constrained by min/max.
+
+    For BPCS we usually want the 30-45 DTE bucket (theta decay sweet spot).
+    """
+    if not available_expiries:
+        return None
+    candidates = []
+    for exp_str in available_expiries:
+        try:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        # Compute DTE vs today (UTC). The strategy caller passes a
+        # caller-provided `now` via the symbol-level wrapper; we just
+        # approximate here based on UTC date. The scanner overrides this.
+        today = datetime.utcnow().date()
+        dte = (exp_date - today).days
+        if passes_dte_window(dte, filters):
+            candidates.append((abs(dte - filters.target_dte), exp_str))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][1]
+
+
+def passes_bpcs_conviction(conviction: float, filters: BPCSFilters) -> bool:
+    return conviction >= filters.min_conviction
+
 
 @dataclass
 class BullPutSpreadSignal:
@@ -43,6 +104,13 @@ class BullPutSpreadSignal:
     max_gain_per_contract: float
     pop: float  # probability of profit (0..1)
     conviction: float  # 0..1
+    # Limit prices for both legs (per share). The short put is sold at
+    # this price; the long put is bought at this price.
+    short_strike_price_estimate: float = 0.0
+    long_strike_price_estimate: float = 0.0
+    # OCC symbols for both legs (filled by scanner)
+    short_put_symbol: str = ""
+    long_put_symbol: str = ""
     strategy_id: str = "bull_put_credit_spread"
     notes: str = ""
     ts: str = ""
@@ -52,6 +120,7 @@ def select_strikes(
     spot: float,
     short_delta_target: float = 0.30,
     long_delta_target: float = 0.15,
+    available_strikes: list[float] | None = None,
 ) -> tuple[float, float] | None:
     """Pick short and long put strikes by delta.
 
@@ -61,19 +130,38 @@ def select_strikes(
     Returns (short_strike, long_strike) or None if strikes can't be
     selected (need options chain).
 
-    For the FIRST CUT we use a rough mapping: delta 0.30 ≈ 5% OTM,
-    delta 0.15 ≈ 10% OTM. Real delta lookup requires the greeks
-    endpoint.
+    Strike selection is a HEURISTIC: we use rough %-OTM mappings
+    because we don't have access to a greeks endpoint on Alpaca paper.
+      - Short put target: 2% OTM (~delta 0.30 for SPY/QQQ)
+      - Long put target:  4% OTM (~delta 0.15)
+
+    If `available_strikes` is provided, we snap to the closest available
+    strike ≤ target. This handles Alpaca paper's incomplete chain
+    coverage (e.g., SPY chain stops at $639 when spot is $772).
     """
     if spot <= 0:
         return None
-    short_strike = round(spot * 0.95, 0)  # ~5% OTM (~delta 0.30)
-    long_strike = round(spot * 0.90, 0)   # ~10% OTM (~delta 0.15)
-    if long_strike >= short_strike:
-        return None
-    # Spread width must be reasonable ($1 to $20 typical)
+    short_target = spot * 0.98  # ~2% OTM
+    long_target = spot * 0.96   # ~4% OTM
+
+    if available_strikes:
+        # Snap to closest available strike ≤ target
+        short_candidates = [s for s in available_strikes if s <= short_target]
+        long_candidates = [s for s in available_strikes if s <= long_target]
+        if not short_candidates or not long_candidates:
+            return None
+        short_strike = max(short_candidates)  # closest strike ≤ target
+        long_strike = max(long_candidates)    # closest strike ≤ target
+        # long_strike must be < short_strike
+        if long_strike >= short_strike:
+            return None
+    else:
+        short_strike = round(short_target, 0)
+        long_strike = round(long_target, 0)
+        if long_strike >= short_strike:
+            return None
     width = short_strike - long_strike
-    if width < 1.0 or width > 20.0:
+    if width < 1.0:
         return None
     return (short_strike, long_strike)
 
@@ -101,6 +189,7 @@ def compute_bpcs_conviction(
     credit: float,
     iv_rank_proxy: float,
     direction_move_pct: float,  # positive = bullish
+    filters: BPCSFilters | None = None,
 ) -> float:
     """Compute conviction for a bull put credit spread.
 
@@ -108,6 +197,9 @@ def compute_bpcs_conviction(
     - Direction is bullish (or neutral)
     - IV is rich (premium sellers want this)
     - Credit > 1/3 of spread width (good risk/reward)
+
+    The `filters` argument is currently unused (kept for parity with
+    long_call.compute_conviction) but allows future tuning.
     """
     # Direction score: full credit for bullish, half for neutral
     if direction_move_pct > 0.003:  # +0.3% or more = bullish

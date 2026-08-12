@@ -200,17 +200,21 @@ class BrokerClient:
 
     # ===== Market data (options) =====
 
-    def list_option_contracts(self, underlying: str, expiry_gte: str, expiry_lte: str) -> list[dict]:
+    def list_option_contracts(self, underlying: str, expiry_gte: str, expiry_lte: str, option_type: str | None = None) -> list[dict]:
         """List all available option contracts for underlying in expiry window.
 
         expiry_gte / expiry_lte are YYYY-MM-DD.
+        option_type: "call", "put", or None (both). Defaults to "call"
+        for backwards compat with long_call scanner; pass "put" for BPCS.
         """
+        if option_type is None:
+            option_type = "call"
         req = GetOptionContractsRequest(
             underlying_symbols=[underlying],
             status="active",
             expiration_date_gte=expiry_gte,
             expiration_date_lte=expiry_lte,
-            type="call",
+            type=option_type,
         )
         try:
             page = self.trading.get_option_contracts(req)
@@ -221,10 +225,16 @@ class BrokerClient:
         contracts = list(page.option_contracts) if hasattr(page, "option_contracts") else []
         out = []
         for c in contracts:
+            # c.expiration_date is a datetime.date object — normalize to YYYY-MM-DD string
+            exp = c.expiration_date
+            if hasattr(exp, "strftime"):
+                exp_str = exp.strftime("%Y-%m-%d")
+            else:
+                exp_str = str(exp)
             out.append({
                 "symbol": c.symbol,  # OCC code e.g. SPY260815C00770000
                 "underlying": underlying,
-                "expiry": c.expiration_date,
+                "expiry": exp_str,
                 "strike": float(c.strike_price),
                 "type": "call" if c.type.value == "call" else "put",
                 "open_interest": int(c.open_interest or 0),
@@ -339,6 +349,35 @@ class BrokerClient:
         )
         log.info("submit_close_sell %s qty=%d limit=%.2f coid=%s",
                  contract_symbol, qty, limit_price, client_order_id)
+        return self.trading.submit_order(req)
+
+    def submit_open_sell(
+        self,
+        contract_symbol: str,
+        qty: int,
+        limit_price: float,
+        client_order_id: str,
+        position_id: str,
+    ) -> AlpacaOrder:
+        """Submit a SELL limit order to OPEN a short position.
+
+        Used for BPCS short-put leg. The short put is sold to open a
+        short position; the long put is also sold (after being bought)
+        — wait, no. Long put is BOUGHT first. This method is for the
+        SHORT PUT leg of a credit spread.
+
+        Uses GTC for non-0DTE (BPCS targets 25-50 DTE — no need to use DAY).
+        """
+        req = LimitOrderRequest(
+            symbol=contract_symbol,
+            qty=qty,
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC,
+            limit_price=round(limit_price, 2),
+            client_order_id=client_order_id,
+        )
+        log.info("submit_open_sell %s qty=%d limit=%.2f coid=%s pos=%s",
+                 contract_symbol, qty, limit_price, client_order_id, position_id)
         return self.trading.submit_order(req)
 
     def _tif_for_contract(self, contract_symbol: str) -> TimeInForce:

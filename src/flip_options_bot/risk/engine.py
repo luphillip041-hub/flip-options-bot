@@ -300,6 +300,82 @@ class RiskEngine:
         contracts = min(contracts, self.settings.max_positions - state.open_position_count)
         return self.Decision(allowed=True, contracts=contracts)
 
+    def evaluate_pre_trade_spread(
+        self,
+        state: RiskState,
+        equity: float,
+        max_loss: float,
+    ) -> "RiskEngine.Decision":
+        """Pre-trade gate for CREDIT SPREADS (BPCS).
+
+        KEY DIFFERENCE from `evaluate_pre_trade`:
+          - For a long_call, debit = what we PAY upfront
+          - For a credit spread, max_loss = what we COULD LOSE if short
+            strike is breached (spread_width * 100 - credit_received).
+            The credit received is INCOME, not risk.
+
+        Risk caps must bound the max_loss, NOT the credit. Otherwise
+        the bot would let you run a 12-contract spread book because the
+        book "only" received $600 in credits.
+        """
+        # === 1. Loss caps (same logic as evaluate_pre_trade) ===
+        daily_cap_dollar = equity * (self.settings.daily_loss_cap_pct / 100.0)
+        weekly_cap_dollar = equity * (self.settings.weekly_loss_cap_pct / 100.0)
+        if state.daily_pnl <= -daily_cap_dollar:
+            state.kill_switch = True
+            state.kill_reason = (
+                f"daily_loss_cap_breach: {state.daily_pnl:.2f} <= -{daily_cap_dollar:.2f}"
+            )
+            self._persist_state(state)
+            return self.Decision(allowed=False, reason=state.kill_reason)
+        if state.weekly_pnl <= -weekly_cap_dollar:
+            state.kill_switch = True
+            state.kill_reason = (
+                f"weekly_loss_cap_breach: {state.weekly_pnl:.2f} <= -{weekly_cap_dollar:.2f}"
+            )
+            self._persist_state(state)
+            return self.Decision(allowed=False, reason=state.kill_reason)
+
+        # === 2. Kill switch ===
+        if state.kill_switch:
+            return self.Decision(allowed=False, reason=f"kill_switch: {state.kill_reason}")
+
+        # === 3. Per-trade max_loss vs equity ===
+        max_loss_pct = self.settings.bpcs_max_loss_pct
+        max_loss_cap_dollar = equity * (max_loss_pct / 100.0)
+        if max_loss > max_loss_cap_dollar:
+            return self.Decision(
+                allowed=False,
+                reason=(
+                    f"bpcs_max_loss_pct: max_loss={max_loss:.2f} > "
+                    f"{max_loss_pct}% of equity ({max_loss_cap_dollar:.2f})"
+                ),
+            )
+
+        # === 4. Absolute max_loss cap ===
+        if max_loss > self.settings.bpcs_max_loss_dollar:
+            return self.Decision(
+                allowed=False,
+                reason=f"bpcs_max_loss_dollar: {max_loss:.2f} > {self.settings.bpcs_max_loss_dollar}",
+            )
+
+        # === 5. Position count ===
+        if state.open_position_count >= self.settings.max_positions:
+            return self.Decision(
+                allowed=False,
+                reason=(
+                    f"max_positions: {state.open_position_count} >= "
+                    f"{self.settings.max_positions}"
+                ),
+            )
+
+        # All gates passed. Compute contracts.
+        # For credit spreads, 1 contract = 1 spread (short + long leg).
+        # Cap at max-positions remaining.
+        contracts = 1
+        contracts = min(contracts, self.settings.max_positions - state.open_position_count)
+        return self.Decision(allowed=True, contracts=contracts)
+
     # ===== Records =====
 
     def record_open(self, state: RiskState, symbol: str, debit: float, event_id: str) -> RiskState:
@@ -307,6 +383,20 @@ class RiskEngine:
         state.updated_at = datetime.now(timezone.utc).isoformat()
         self._persist_state(state)
         self.record_event(event_id, "open", pnl=-debit, payload=symbol)
+        return state
+
+    def record_open_spread(
+        self, state: RiskState, symbol: str, max_loss: float, event_id: str
+    ) -> RiskState:
+        """Record a credit spread open. Tracks max_loss as the exposure.
+
+        Unlike `record_open`, we don't subtract debit (we received credit
+        which is income). We track max_loss in the payload for audit.
+        """
+        state.open_position_count += 1
+        state.updated_at = datetime.now(timezone.utc).isoformat()
+        self._persist_state(state)
+        self.record_event(event_id, "open_spread", pnl=0.0, payload=f"{symbol}|max_loss={max_loss:.2f}")
         return state
 
     def record_close(

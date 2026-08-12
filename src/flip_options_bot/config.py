@@ -116,6 +116,33 @@ class Settings:
 
     diagonal_enabled: bool = False  # off until exit-logic revision ships
 
+    # ===== Bull Put Credit Spread (BPCS) =====
+    # Off by default — needs separate risk caps + per-trade max-loss
+    # enforcement (defined-risk spread, max_loss = width*100 - credit).
+    bpcs_enabled: bool = False
+    # Higher target_dte than long_call: theta decay advantage
+    # (30-45 DTE is Tastytrade canonical for credit spreads).
+    bpcs_target_dte: int = 35
+    bpcs_min_dte: int = 25
+    bpcs_max_dte: int = 50
+    # Strike selection: short strike delta target
+    bpcs_short_delta: float = 0.30
+    # Spread width in dollars. SPY spreads are typically $5-$15 wide.
+    # Allow up to $50 to handle SPY/QQQ/IBM/etc.
+    bpcs_min_width: float = 2.0
+    bpcs_max_width: float = 50.0
+    # Minimum credit as fraction of width (don't sell <33% premium)
+    bpcs_min_credit_pct_of_width: float = 0.33
+    # Per-trade MAX LOSS cap (as fraction of equity) — this is the
+    # REAL risk bound for a credit spread (not the credit received).
+    bpcs_max_loss_pct: float = 2.0
+    # Absolute max loss per spread in dollars
+    bpcs_max_loss_dollar: float = 600.0
+    # Profit target: take profit at 50% of credit received
+    bpcs_profit_target_pct: float = 0.50
+    # Closing days before expiry: close at 21 DTE to avoid gamma risk
+    bpcs_close_at_dte: int = 21
+
     entry_hours_et: str = "09:30-15:30"
 
     close_eod_minutes: int = 5
@@ -205,6 +232,20 @@ class Settings:
                 merged, "FOB_LONG_CALL_DIRECTIONAL_LOOKBACK_MINUTES", 20
             ),
             diagonal_enabled=_coerce_bool(merged, "FOB_DIAGONAL_ENABLED", False),
+            bpcs_enabled=_coerce_bool(merged, "FOB_BPCS_ENABLED", False),
+            bpcs_target_dte=_coerce_int(merged, "FOB_BPCS_TARGET_DTE", 35),
+            bpcs_min_dte=_coerce_int(merged, "FOB_BPCS_MIN_DTE", 25),
+            bpcs_max_dte=_coerce_int(merged, "FOB_BPCS_MAX_DTE", 50),
+            bpcs_short_delta=_coerce_float(merged, "FOB_BPCS_SHORT_DELTA", 0.30),
+            bpcs_min_width=_coerce_float(merged, "FOB_BPCS_MIN_WIDTH", 2.0),
+            bpcs_max_width=_coerce_float(merged, "FOB_BPCS_MAX_WIDTH", 50.0),
+            bpcs_min_credit_pct_of_width=_coerce_float(
+                merged, "FOB_BPCS_MIN_CREDIT_PCT_OF_WIDTH", 0.33
+            ),
+            bpcs_max_loss_pct=_coerce_float(merged, "FOB_BPCS_MAX_LOSS_PCT", 2.0),
+            bpcs_max_loss_dollar=_coerce_float(merged, "FOB_BPCS_MAX_LOSS_DOLLAR", 600.0),
+            bpcs_profit_target_pct=_coerce_float(merged, "FOB_BPCS_PROFIT_TARGET_PCT", 0.50),
+            bpcs_close_at_dte=_coerce_int(merged, "FOB_BPCS_CLOSE_AT_DTE", 21),
             entry_hours_et=merged.get("FOB_ENTRY_HOURS_ET", "09:30-15:30"),
             close_eod_minutes=_coerce_int(merged, "FOB_CLOSE_EOD_MINUTES", 5),
             dashboard=_coerce_bool(merged, "FOB_DASHBOARD", True),
