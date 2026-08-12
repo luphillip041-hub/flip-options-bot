@@ -94,6 +94,15 @@ class Settings:
     daily_profit_lock_arm_pct: float = 2.0
     daily_profit_lock_retention_pct: float = 0.50
 
+    # Gain-protection monitor knobs
+    sl_threshold_pct: float = 0.50       # SL fires at 50% of entry
+    tp_multiplier: float = 1.50          # partial TP at +50%
+    tp_full_multiplier: float = 2.00     # full TP only if no partial AND +100%
+    trailing_arm_pct: float = 0.10       # trailing floor arms after +10%
+    trailing_retention: float = 0.50     # 50% of peak (legacy knob)
+    profit_floor_pct: float = 1.10       # never give gains back to entry
+    min_tp_profit_dollar: float = 25.0   # don't take tiny profit at wash
+
     long_call_enabled: bool = True
     long_call_min_direction_move_pct: float = 0.003
     long_call_max_vwap_extension_pct: float = 0.020
@@ -170,6 +179,13 @@ class Settings:
             daily_profit_lock_retention_pct=_coerce_float(
                 merged, "FOB_DAILY_PROFIT_LOCK_RETENTION_PCT", 0.50
             ),
+            sl_threshold_pct=_coerce_float(merged, "FOB_SL_THRESHOLD_PCT", 0.50),
+            tp_multiplier=_coerce_float(merged, "FOB_TP_MULTIPLIER", 1.50),
+            tp_full_multiplier=_coerce_float(merged, "FOB_TP_FULL_MULTIPLIER", 2.00),
+            trailing_arm_pct=_coerce_float(merged, "FOB_TRAILING_ARM_PCT", 0.10),
+            trailing_retention=_coerce_float(merged, "FOB_TRAILING_RETENTION", 0.50),
+            profit_floor_pct=_coerce_float(merged, "FOB_PROFIT_FLOOR_PCT", 1.10),
+            min_tp_profit_dollar=_coerce_float(merged, "FOB_MIN_TP_PROFIT_DOLLAR", 25.0),
             long_call_enabled=_coerce_bool(merged, "FOB_LONG_CALL_ENABLED", True),
             long_call_min_direction_move_pct=_coerce_float(
                 merged, "FOB_LONG_CALL_MIN_DIRECTION_MOVE_PCT", 0.003

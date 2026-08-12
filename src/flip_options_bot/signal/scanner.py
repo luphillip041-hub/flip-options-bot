@@ -27,6 +27,7 @@ from ..strategies.long_call import (
     make_filters_from_settings,
     passes_conviction,
     pick_target_expiry,
+    volatility_regime_ok,
 )
 
 log = logging.getLogger("flip_options_bot.scanner")
@@ -136,6 +137,24 @@ class Scanner:
         if not eligible:
             return signals
 
+        # Volatility regime filter — sample spreads across the eligible
+        # chain. If median spread > 20%, market makers are pulling quotes
+        # (vol crash). Don't buy premium in that regime.
+        chain_spreads = []
+        for c in eligible[:20]:  # sample up to 20 contracts for the regime check
+            snap = self.broker.get_option_snapshot(c["symbol"])
+            if snap and snap.get("bid", 0) > 0 and snap.get("ask", 0) > 0:
+                mid = (snap["bid"] + snap["ask"]) / 2
+                spread_pct = (snap["ask"] - snap["bid"]) / max(mid, 0.01)
+                chain_spreads.append(spread_pct)
+        if not volatility_regime_ok(chain_spreads):
+            log.info(
+                "%s chain skipped: vol regime wide (median spread=%.2f%%)",
+                symbol,
+                sorted(chain_spreads)[len(chain_spreads) // 2] * 100 if chain_spreads else 0,
+            )
+            return signals
+
         # Pull snapshots for each contract
         spot_quote = self.broker.get_stock_quote(symbol)
         if spot_quote is None:
@@ -146,8 +165,18 @@ class Scanner:
             snap = self.broker.get_option_snapshot(c["symbol"])
             if snap is None or "bid" not in snap or "ask" not in snap:
                 continue
-            mid = (snap["bid"] + snap["ask"]) / 2
-            spread_pct = (snap["ask"] - snap["bid"]) / max(mid, 0.01)
+            bid = float(snap["bid"])
+            ask = float(snap["ask"])
+            if bid <= 0 or ask <= 0 or ask <= bid:
+                continue  # invalid quote; skip
+            mid = (bid + ask) / 2
+            spread = ask - bid
+            spread_pct = spread / max(mid, 0.01)
+
+            # Skip contracts with absurdly wide spreads (>50%) — never trade
+            # a wide-spread option, the slippage alone will eat our gains.
+            if spread_pct > 0.50:
+                continue
 
             conviction = compute_conviction(
                 direction_move=direction_move,
@@ -159,6 +188,14 @@ class Scanner:
             if not passes_conviction(conviction, filters):
                 continue
 
+            # Gain-protection entry: pay 25% of the spread above mid, so we
+            # sit closer to the bid (the bid IS our floor if we have to exit
+            # immediately). For a $1.00 mid / $0.20 spread, that's $1.05.
+            # This beats paying mid*1.02 ($1.02) AND pays less than asking
+            # full ask ($1.10). The trade fills when the bid lifts to our
+            # limit; in paper, it usually fills within seconds.
+            entry_price = round(mid + 0.25 * spread, 2)
+
             signals.append(LongCallSignal(
                 symbol=c["symbol"],
                 expiry=expiry,
@@ -166,7 +203,7 @@ class Scanner:
                 side="buy",
                 option_type="call",
                 qty=1,
-                limit_price=round(mid * 1.02, 2),  # pay a small premium above mid
+                limit_price=entry_price,
                 conviction=conviction,
                 dte=dte,
                 strategy_id="long_call",

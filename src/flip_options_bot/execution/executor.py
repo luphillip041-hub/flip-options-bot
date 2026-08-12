@@ -74,12 +74,16 @@ class Executor:
         position_id = Journal.new_position_id()
         coid = f"open-{uuid.uuid4()}"
 
-        # === Compute TP/SL from signal ===
-        # Defaults: TP = 1.5x entry, SL trigger = 0.50x entry, SL limit = 0.45x entry.
+        # === Compute TP/SL from signal + Settings ===
+        # tp_multiplier: take-profit leg (matches monitor tp_partial trigger)
+        # sl_threshold_pct: stop-loss leg (matches monitor SL trigger)
         # The bracket is broker-resident: if the daemon dies, the SL still fires.
-        tp_price = round(signal.limit_price * 1.50, 2)
-        sl_trigger = round(signal.limit_price * 0.50, 2)
-        sl_limit = round(signal.limit_price * 0.45, 2)
+        tp_price = round(signal.limit_price * self.settings.tp_multiplier, 2)
+        sl_trigger = round(signal.limit_price * self.settings.sl_threshold_pct, 2)
+        # SL limit price = 5% below trigger (gives the order room to fill
+        # in a fast gap, otherwise the stop might "miss" if it's a stop-limit
+        # with limit==trigger).
+        sl_limit = round(sl_trigger * 0.95, 2)
 
         # === Submit bracket to broker ===
         # Alpaca paper does NOT support BRACKET orders on options ("complex

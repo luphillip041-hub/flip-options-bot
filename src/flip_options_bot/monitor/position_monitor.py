@@ -1,22 +1,39 @@
 """Position monitor — runs alongside the scanner loop.
 
 The monitor watches open positions every `position_monitor_interval_s`
-seconds and decides whether any position needs to be closed:
+seconds and decides whether any position needs to be closed.
+
+The cardinal rule: **hold onto gains, don't give them away.**
+
+Close triggers, in priority order:
 
 1. **Stop-loss (sl)**: mark <= entry * sl_threshold_pct (default 50%)
-2. **Take-profit (tp)**: mark >= entry * tp_multiplier (default 1.50,
-   i.e. +50% gain) — a safety net; broker bracket should fire first
-3. **Trailing profit floor (trailing_floor)**: position gained >=
-   arm_pct, then mark drops below peak_gain * retention_pct → close
-   (default arm=10%, retention=50%). Mirrors the flip-alpaca-bot frozen
-   knob `FLIP_TRAILING_RETENTION=0.50`.
-4. **EOD flatten (eod)**: minutes_to_close < close_eod_minutes (default 15).
+   — the absolute floor. Bad trade, get out.
+
+2. **Take-profit partial (tp_partial)**: mark >= entry * tp_multiplier
+   (default 1.50, i.e. +50%) — sell HALF the position. Lock the gain.
+   The other half continues to run with the trailing floor.
+
+3. **Take-profit full (tp)**: ONLY if no partial has been taken yet AND
+   mark >= entry * tp_full_multiplier (default 2.00, i.e. +100%) —
+   sell the full position. Big winner, take it.
+
+4. **Trailing profit floor (trailing_floor)**: position gained >=
+   arm_pct (default +10%), then mark drops below max(peak *
+   retention_pct, entry * profit_floor_pct) → close the REMAINING
+   half. **Never give gains back to entry.** profit_floor_pct (default
+   1.10) means we keep at least +10% even after a peak.
+
+5. **EOD flatten (eod)**: minutes_to_close < close_eod_minutes
+   (default 15). No overnight risk.
 
 Triggers fire `Closer.flatten_position(reason=...)` so the journal
 records why. The Closer itself is idempotent on client_order_id.
 
-Peak gain tracking lives in journal.positions.peak_mark (set at entry,
-updated each tick).
+Partial-fill state lives in journal.positions.qty_closed (incremented
+on each partial close). After tp_partial, the monitor expects qty_closed
+to be >= qty/2, and the remaining half is monitored against trailing_floor
+instead of tp_full.
 """
 
 from __future__ import annotations
@@ -71,8 +88,13 @@ class PositionMonitor:
         self.eod_minutes = getattr(settings, "close_eod_minutes", DEFAULT_EOD_FLATTEN_MINUTES)
         self.sl_threshold_pct = getattr(settings, "sl_threshold_pct", 0.50)
         self.tp_multiplier = getattr(settings, "tp_multiplier", 1.50)
+        self.tp_full_multiplier = getattr(settings, "tp_full_multiplier", 2.00)
         self.trailing_arm_pct = getattr(settings, "trailing_arm_pct", 0.10)
         self.trailing_retention = getattr(settings, "trailing_retention", 0.50)
+        self.profit_floor_pct = getattr(settings, "profit_floor_pct", 1.10)
+        # Min dollar profit before TP fires — prevents exiting at a wash
+        # when spread is so wide that even a +50% mark = small dollars.
+        self.min_tp_profit_dollar = getattr(settings, "min_tp_profit_dollar", 25.0)
 
     def tick(self, state: RiskState) -> MonitorTick:
         """One monitoring pass. Returns a MonitorTick summary."""
@@ -117,14 +139,16 @@ class PositionMonitor:
                 self._update_peak(position_id, mark)
                 peak_mark = mark
 
-            trigger = self._should_close(avg_entry, peak_mark, mark, state)
-            if trigger is None:
+            decision = self._evaluate_position(
+                pos, qty, qty_closed, avg_entry, peak_mark, mark, state
+            )
+            if decision is None:
                 continue
+            trigger, close_qty, limit_price = decision
 
-            limit_price = self._exit_price(trigger, mark, avg_entry)
             close = self.closer.flatten_position(
                 symbol=symbol,
-                qty=qty,
+                qty=close_qty,
                 position_id=position_id,
                 limit_price=limit_price,
                 reason=trigger,
@@ -134,7 +158,7 @@ class PositionMonitor:
                 result.reasons[trigger] = result.reasons.get(trigger, 0) + 1
                 log.info(
                     "monitor close %s qty=%d trigger=%s mark=%.2f limit=%.2f",
-                    symbol, qty, trigger, mark, limit_price,
+                    symbol, close_qty, trigger, mark, limit_price,
                 )
 
         if result.closes_triggered:
@@ -144,55 +168,109 @@ class PositionMonitor:
             )
         return result
 
-    def _should_close(
-        self, avg_entry: float, peak_mark: float, mark: float, state: RiskState
-    ) -> str | None:
-        """Return one of: 'sl', 'tp', 'trailing_floor', 'eod', or None."""
+    def _evaluate_position(
+        self,
+        pos: dict,
+        qty: int,
+        qty_closed: int,
+        avg_entry: float,
+        peak_mark: float,
+        mark: float,
+        state: RiskState,
+    ) -> tuple[str, int, float] | None:
+        """Decide what (if anything) to close. Returns (trigger, qty_to_close, limit_price) or None.
+
+        Gain-protection semantics (priority order):
+        1. SL always wins (no partial — full exit)
+        2. tp_partial at +50%: sell half if no partial yet, IF minimum profit dollar met
+        3. tp_full at +100% (if no partial was taken): exit all
+        4. trailing_floor at arm+10% & mark < max(peak*retention, entry*profit_floor)
+        5. EOD flatten — full exit, last 15 min of session
+        """
         if mark <= 0 or avg_entry <= 0:
             return None
 
-        # Stop-loss at sl_threshold_pct of entry (default 50%)
+        qty_open = pos.get("qty_open", 0) or 0
+
+        # === 1. SL — full exit, no partial ===
         if mark <= avg_entry * self.sl_threshold_pct:
-            return "sl"
+            limit_price = self._exit_price("sl", mark, avg_entry)
+            return ("sl", qty, limit_price)
 
-        # Take-profit at tp_multiplier of entry (default +50%)
-        if mark >= avg_entry * self.tp_multiplier:
-            return "tp"
+        # === 2. tp_partial — first time we hit +50%, sell half IF min profit $ ===
+        # Compute the dollar profit if we exited at mark:
+        # P&L per contract = (mark - avg_entry) * 100. For qty contracts:
+        potential_profit_dollar = (mark - avg_entry) * 100 * qty
 
-        # Trailing profit floor — only after a peak gain of trailing_arm_pct
+        if (
+            mark >= avg_entry * self.tp_multiplier
+            and qty_closed == 0
+            and potential_profit_dollar >= self.min_tp_profit_dollar
+        ):
+            # Close half (rounded up so odd-lots still lock gains)
+            partial_qty = max(1, (qty + 1) // 2)
+            limit_price = self._exit_price("tp_partial", mark, avg_entry)
+            return ("tp_partial", partial_qty, limit_price)
+
+        # === 3. tp_full — only if NO partial was taken AND mark is at +100% ===
+        if (
+            mark >= avg_entry * self.tp_full_multiplier
+            and qty_closed == 0
+            and potential_profit_dollar >= self.min_tp_profit_dollar
+        ):
+            limit_price = self._exit_price("tp", mark, avg_entry)
+            return ("tp", qty, limit_price)
+
+        # === 4. trailing_floor — only fires when armed (peak gain >= arm_pct) ===
         gain_pct = (peak_mark - avg_entry) / avg_entry
         if gain_pct >= self.trailing_arm_pct:
             retention_target = peak_mark * self.trailing_retention
-            if mark <= retention_target:
-                return "trailing_floor"
+            profit_floor = avg_entry * self.profit_floor_pct
+            exit_floor = max(retention_target, profit_floor)
+            if mark <= exit_floor:
+                limit_price = self._exit_price("trailing_floor", mark, avg_entry)
+                return ("trailing_floor", qty, limit_price)
 
-        # EOD flatten — only on a weekday, in the last `eod_minutes`
+        # === 5. EOD flatten — full exit, weekday only, last `eod_minutes` ===
         now = now_utc()
         if is_weekday(now):
             minutes_left = minutes_to_close(now)
             if 0 <= minutes_left <= self.eod_minutes:
-                return "eod"
+                limit_price = self._exit_price("eod", mark, avg_entry)
+                return ("eod", qty, limit_price)
 
         return None
 
     def _exit_price(self, trigger: str, mark: float, avg_entry: float) -> float:
         """Compute the limit price for the close order.
 
-        The monitor NEVER submits market orders. For SL/EOD we use a
-        limit BELOW the mark so a cross would happen if the price is
-        moving against us. For TP/trailing we use a limit slightly below
-        mark to ensure a fill while the bracket leg may already be gone.
+        Rule: **never exit below the bid**. For protective exits (SL, EOD)
+        we accept mark*0.99 floor; for gain-capturing exits (TP,
+        trailing_floor) we set the limit at mark so a paper fill at the
+        bid still captures the gain.
+
+        Gain-protection order of priority:
+        1. Trailing floor / TP partial — exit at mark (paper fills at bid,
+           but the bid IS our floor).
+        2. TP full — exit at mark (we're capturing the full move, no
+           compromise on price).
+        3. SL — exit at bid or 97% of mark (whichever higher). Don't
+           leave money on the table, but accept the slip.
+        4. EOD — exit at mark (we want out, no haggling).
         """
-        if trigger == "sl":
-            # Use mark (or slightly below) — the bracket stop will fire if mark hits
-            return max(mark * 0.97, 0.05)
-        if trigger == "tp":
-            # Capture the gain; limit at mark
-            return max(mark * 0.99, 0.10)
+        if trigger in ("tp", "tp_partial"):
+            # Capture the gain; limit at mark so we don't leave money on
+            # the table.
+            return max(mark, 0.05)
         if trigger == "trailing_floor":
-            return max(mark * 0.99, 0.10)
+            # Floor based on mark — the bid is implicit floor.
+            return max(mark, 0.05)
+        if trigger == "sl":
+            # Use mark (or slightly below) — the bracket stop will fire
+            # if mark hits. Don't go below bid though.
+            return max(mark * 0.97, 0.05)
         if trigger == "eod":
-            # EOD: get out, even if a small slip — use mark (broker may reject)
+            # EOD: get out, accept slip — but still no lower than mark.
             return max(mark * 0.98, 0.05)
         # Default
         return max(mark, 0.05)
