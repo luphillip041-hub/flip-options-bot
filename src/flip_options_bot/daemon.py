@@ -90,7 +90,7 @@ def run_once(
         return {
             "scan_id": "reconcile-only",
             "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
-            "watchlist_count": 0,
+            "watchlist_count": len(watchlist),
             "reconciled": n_reconciled,
             "submitted_count": 0,
         }
@@ -104,7 +104,7 @@ def run_once(
         return {
             "scan_id": "market-closed",
             "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
-            "watchlist_count": 0,
+            "watchlist_count": len(watchlist),
             "submitted_count": 0,
             "reconciled": n_reconciled,
             "dominant_skip_reason": "market_closed",
@@ -115,7 +115,7 @@ def run_once(
         return {
             "scan_id": "outside-entry",
             "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
-            "watchlist_count": 0,
+            "watchlist_count": len(watchlist),
             "submitted_count": 0,
             "reconciled": n_reconciled,
             "dominant_skip_reason": "outside_entry_window",
