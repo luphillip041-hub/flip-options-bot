@@ -172,3 +172,31 @@ def volatility_regime_ok(chain_spreads: list[float]) -> bool:
     sorted_s = sorted(chain_spreads)
     median = sorted_s[len(sorted_s) // 2]
     return median <= 0.20
+
+
+def size_by_conviction(conviction: float, base_qty: int = 1) -> int:
+    """Scale position size by conviction.
+
+    Tiered sizing:
+      - conviction < 0.45: 0 contracts (shouldn't reach here — gate filters)
+      - conviction 0.45-0.60: 1 contract (baseline)
+      - conviction 0.60-0.75: 1 contract (still baseline — don't get overconfident)
+      - conviction 0.75-0.90: 2 contracts (high conviction = scale up)
+      - conviction >= 0.90: 2 contracts (max — capped to prevent concentration)
+
+    The risk engine's max-position cap is the ultimate governor; we just
+    suggest size based on signal quality.
+    """
+    if conviction < 0.45:
+        return 0
+    if conviction >= 0.75:
+        return max(1, base_qty * 2)
+    return max(1, base_qty)
+
+
+def is_strong_setup(conviction: float) -> bool:
+    """True if this is an A+ setup worth scaling up.
+
+    Conviction >= 0.75 AND direction momentum is healthy.
+    """
+    return conviction >= 0.75
