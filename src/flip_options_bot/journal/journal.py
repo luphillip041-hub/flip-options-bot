@@ -23,8 +23,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -33,7 +33,15 @@ from typing import Literal
 class TradeEvent:
     event_id: str  # client_order_id from broker
     ts: str
-    kind: Literal["open", "close", "open_attempt", "close_attempt", "fill_partial", "open_spread", "close_spread"]
+    kind: Literal[
+        "open",
+        "close",
+        "open_attempt",
+        "close_attempt",
+        "fill_partial",
+        "open_spread",
+        "close_spread",
+    ]
     symbol: str
     side: Literal["buy", "sell"]
     qty: int
@@ -74,15 +82,9 @@ class Journal:
                 )
                 """
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades (symbol)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_trades_position ON trades (position_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades (ts)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades (symbol)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_position ON trades (position_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades (ts)")
             # Map position_id → current state. One open event, then
             # one or more close events. position_state is updated on each event.
             conn.execute(
@@ -153,7 +155,8 @@ class Journal:
             qty_open = sum(int(r[2] or 0) for r in open_rows)
             avg_entry = (
                 sum(float(r[2] or 0) * float(r[3] or 0.0) for r in open_rows) / qty_open
-                if qty_open > 0 else 0.0
+                if qty_open > 0
+                else 0.0
             )
             first = open_rows[0]
             conn.execute(
@@ -254,6 +257,21 @@ class Journal:
         if not event.position_id:
             return
         if event.kind in ("open", "open_spread"):
+            # Recompute from canonical trade rows. This makes an UPSERT of the
+            # same broker fill idempotent instead of incrementing qty_open.
+            open_rows = conn.execute(
+                """
+                SELECT qty, price FROM trades
+                WHERE position_id = ? AND kind IN ('open', 'open_spread')
+                """,
+                (event.position_id,),
+            ).fetchall()
+            qty_open_total = sum(int(r[0]) for r in open_rows)
+            avg_entry = (
+                sum(int(r[0]) * float(r[1]) for r in open_rows) / qty_open_total
+                if qty_open_total > 0
+                else 0.0
+            )
             conn.execute(
                 """
                 INSERT INTO positions (
@@ -261,14 +279,15 @@ class Journal:
                     avg_entry_price, strategy_id, state
                 ) VALUES (?, ?, ?, ?, ?, ?, 'open')
                 ON CONFLICT(position_id) DO UPDATE SET
-                    qty_open = qty_open + excluded.qty_open
+                    qty_open = excluded.qty_open,
+                    avg_entry_price = excluded.avg_entry_price
                 """,
                 (
                     event.position_id,
                     event.symbol,
                     event.ts,
-                    event.qty,
-                    event.price,
+                    qty_open_total,
+                    avg_entry,
                     event.strategy_id,
                 ),
             )
@@ -302,7 +321,9 @@ class Journal:
             else:
                 avg_exit = 0.0
 
-            new_state = "closed" if qty_closed_total >= qty_open_total and qty_open_total > 0 else "open"
+            new_state = (
+                "closed" if qty_closed_total >= qty_open_total and qty_open_total > 0 else "open"
+            )
 
             conn.execute(
                 """
@@ -330,14 +351,12 @@ class Journal:
 
     def get_open_positions(self) -> list[dict]:
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.execute(
-                "SELECT * FROM positions WHERE state = 'open' OR state = 'partial'"
-            )
+            cur = conn.execute("SELECT * FROM positions WHERE state = 'open' OR state = 'partial'")
             rows = cur.fetchall()
             if not rows:
                 return []
             cols = [c[0] for c in cur.description]
-            return [dict(zip(cols, r)) for r in rows]
+            return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def get_all_positions(self) -> list[dict]:
         with sqlite3.connect(self.db_path) as conn:
@@ -346,7 +365,7 @@ class Journal:
             if not rows:
                 return []
             cols = [c[0] for c in cur.description]
-            return [dict(zip(cols, r)) for r in rows]
+            return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def get_position_for_id(self, position_id: str) -> dict | None:
         """Return the positions row for a single position_id, or None."""
@@ -356,7 +375,7 @@ class Journal:
         if not row:
             return None
         cols = [c[0] for c in cur.description]
-        return dict(zip(cols, row))
+        return dict(zip(cols, row, strict=True))
 
     def get_legs_for_position(self, position_id: str) -> list[dict]:
         """Return all trade events tied to a position_id.
@@ -373,13 +392,24 @@ class Journal:
         if not rows:
             return []
         cols = [c[0] for c in cur.description]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(zip(cols, r, strict=True)) for r in rows]
+
+    def get_event(self, event_id: str) -> dict | None:
+        """Return one journal trade event by broker client_order_id."""
+        with sqlite3.connect(self.db_path) as conn:
+            cur = conn.execute("SELECT * FROM trades WHERE event_id = ?", (event_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None
+            cols = [c[0] for c in cur.description]
+            return dict(zip(cols, row, strict=True))
 
     def has_event(self, event_id: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
-            return conn.execute(
-                "SELECT 1 FROM trades WHERE event_id = ?", (event_id,)
-            ).fetchone() is not None
+            return (
+                conn.execute("SELECT 1 FROM trades WHERE event_id = ?", (event_id,)).fetchone()
+                is not None
+            )
 
     def set_bracket(
         self,
@@ -436,4 +466,4 @@ class Journal:
 
     @staticmethod
     def now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()

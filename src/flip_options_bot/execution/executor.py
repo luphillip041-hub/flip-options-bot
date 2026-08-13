@@ -16,10 +16,12 @@ reconcile loop will catch it.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from datetime import UTC
 
 from ..broker import BrokerClient
 from ..config import Settings
@@ -27,8 +29,8 @@ from ..journal import Journal, TradeEvent
 from ..risk import RiskEngine, RiskState
 from ..strategies.bull_put_credit import BullPutSpreadSignal
 from ..strategies.long_call import LongCallSignal
-from ..strategies.long_put import LongPutSignal
 from ..strategies.long_equity import LongEquitySignal
+from ..strategies.long_put import LongPutSignal
 
 log = logging.getLogger("flip_options_bot.executor")
 
@@ -44,13 +46,17 @@ class ExecutionResult:
 class Executor:
     """One instance per daemon. Stateless; holds references to broker, journal, risk."""
 
-    def __init__(self, settings: Settings, broker: BrokerClient, journal: Journal, risk: RiskEngine):
+    def __init__(
+        self, settings: Settings, broker: BrokerClient, journal: Journal, risk: RiskEngine
+    ):
         self.settings = settings
         self.broker = broker
         self.journal = journal
         self.risk = risk
 
-    def submit_long_option(self, signal: LongCallSignal | LongPutSignal, equity: float, state: RiskState) -> ExecutionResult:
+    def submit_long_option(
+        self, signal: LongCallSignal | LongPutSignal, equity: float, state: RiskState
+    ) -> ExecutionResult:
         """Submit one long directional option signal (call or put). Risk gate runs first.
 
         If `state.is_live()` is True and the executor has not been configured
@@ -105,11 +111,7 @@ class Executor:
             )
         except Exception as e:
             err = str(e).lower()
-            unsupported = (
-                "complex orders not supported" in err
-                or "bracket" in err
-                or "oco" in err
-            )
+            unsupported = "complex orders not supported" in err or "bracket" in err or "oco" in err
             if not unsupported:
                 log.error("broker submit_bracket_buy failed for %s: %s", signal.symbol, e)
                 return ExecutionResult(accepted=False, reason=f"broker_error: {e}")
@@ -188,8 +190,12 @@ class Executor:
 
         log.info(
             "submitted %s qty=%d coid=%s pos=%s tp=%s sl=%s",
-            signal.symbol, decision.contracts, coid, position_id,
-            tp_oid or "(none)", sl_oid or "(none)",
+            signal.symbol,
+            decision.contracts,
+            coid,
+            position_id,
+            tp_oid or "(none)",
+            sl_oid or "(none)",
         )
         return ExecutionResult(
             accepted=True,
@@ -197,14 +203,20 @@ class Executor:
             position_id=position_id,
         )
 
-    def submit_long_call(self, signal: LongCallSignal, equity: float, state: RiskState) -> ExecutionResult:
+    def submit_long_call(
+        self, signal: LongCallSignal, equity: float, state: RiskState
+    ) -> ExecutionResult:
         """Backward-compatible wrapper for callers/tests that only know long_call."""
         return self.submit_long_option(signal, equity=equity, state=state)
 
-    def submit_long_put(self, signal: LongPutSignal, equity: float, state: RiskState) -> ExecutionResult:
+    def submit_long_put(
+        self, signal: LongPutSignal, equity: float, state: RiskState
+    ) -> ExecutionResult:
         return self.submit_long_option(signal, equity=equity, state=state)
 
-    def submit_long_equity(self, signal: LongEquitySignal, equity: float, state: RiskState) -> ExecutionResult:
+    def submit_long_equity(
+        self, signal: LongEquitySignal, equity: float, state: RiskState
+    ) -> ExecutionResult:
         """Submit one bullish long-equity fallback signal with limit orders only."""
         if signal.strategy_id != "long_equity":
             return ExecutionResult(accepted=False, reason=f"unknown strategy {signal.strategy_id}")
@@ -215,9 +227,7 @@ class Executor:
                 accepted=False,
                 reason=f"long_equity_notional: {notional:.2f} > {self.settings.long_equity_max_position_dollar:.2f}",
             )
-        decision = self.risk.evaluate_pre_trade_stock(
-            state, equity=equity, proposed_risk=stop_risk
-        )
+        decision = self.risk.evaluate_pre_trade_stock(state, equity=equity, proposed_risk=stop_risk)
         if not decision.allowed:
             log.info("risk denied long_equity %s: %s", signal.symbol, decision.reason)
             return ExecutionResult(accepted=False, reason=decision.reason)
@@ -276,8 +286,13 @@ class Executor:
         )
         log.info(
             "submitted long_equity %s qty=%d coid=%s pos=%s entry=%.2f tp=%.2f stop=%.2f",
-            signal.symbol, signal.qty, coid, position_id,
-            signal.limit_price, signal.take_profit_price, signal.stop_price,
+            signal.symbol,
+            signal.qty,
+            coid,
+            position_id,
+            signal.limit_price,
+            signal.take_profit_price,
+            signal.stop_price,
         )
         return ExecutionResult(accepted=True, client_order_id=coid, position_id=position_id)
 
@@ -303,12 +318,22 @@ class Executor:
         if signal.strategy_id != "bull_put_credit_spread":
             return ExecutionResult(accepted=False, reason=f"unknown strategy {signal.strategy_id}")
 
+        underlying = self._occ_underlying(short_put_symbol)
+        if underlying and self._has_open_bpcs_underlying(underlying):
+            reason = f"duplicate_bpcs_underlying:{underlying}"
+            log.info("risk denied BPCS %s/%s: %s", short_put_symbol, long_put_symbol, reason)
+            return ExecutionResult(accepted=False, reason=reason)
+
         # === Risk gate: check max_loss against bpcs_max_loss_* ===
         decision = self.risk.evaluate_pre_trade_spread(
-            state, equity=equity, max_loss=signal.max_loss_per_contract,
+            state,
+            equity=equity,
+            max_loss=signal.max_loss_per_contract,
         )
         if not decision.allowed:
-            log.info("risk denied BPCS %s/%s: %s", short_put_symbol, long_put_symbol, decision.reason)
+            log.info(
+                "risk denied BPCS %s/%s: %s", short_put_symbol, long_put_symbol, decision.reason
+            )
             return ExecutionResult(accepted=False, reason=decision.reason)
 
         # === Live mode double-check ===
@@ -338,8 +363,7 @@ class Executor:
                 position_id=position_id,
             )
         except Exception as e:
-            log.error("BPCS MLEG submit failed for %s/%s: %s",
-                      short_put_symbol, long_put_symbol, e)
+            log.error("BPCS MLEG submit failed for %s/%s: %s", short_put_symbol, long_put_symbol, e)
             return ExecutionResult(accepted=False, reason=f"broker_error_mleg: {e}")
 
         # === Write journal event for the spread order ===
@@ -376,8 +400,13 @@ class Executor:
 
         log.info(
             "BPCS submitted %s/%s qty=%d pos=%s coid=%s max_loss=$%.0f credit=$%.2f status=%s",
-            short_put_symbol, long_put_symbol, decision.contracts, position_id,
-            spread_coid, signal.max_loss_per_contract, signal.credit_estimate,
+            short_put_symbol,
+            long_put_symbol,
+            decision.contracts,
+            position_id,
+            spread_coid,
+            signal.max_loss_per_contract,
+            signal.credit_estimate,
             spread_order.status,
         )
         return ExecutionResult(
@@ -385,6 +414,41 @@ class Executor:
             client_order_id=spread_coid,
             position_id=position_id,
         )
+
+    @staticmethod
+    def _occ_underlying(contract_symbol: str) -> str:
+        match = re.match(r"^([A-Z]+)\d{6}[CP]\d{8}$", contract_symbol or "")
+        return match.group(1) if match else ""
+
+    def _has_open_bpcs_underlying(self, underlying: str) -> bool:
+        """One logical credit-spread exposure per underlying at a time.
+
+        A submitted close_spread is only a placeholder. Treat the exposure as
+        active until reconciliation marks that close with fill_source=broker.
+        """
+        prefix = f"BPCS:{underlying}"
+        for pos in self.journal.get_all_positions():
+            if pos.get("strategy_id") != "bull_put_credit_spread" or not str(
+                pos.get("symbol") or ""
+            ).startswith(prefix):
+                continue
+            if pos.get("state") in ("open", "partial"):
+                return True
+            closes = [
+                event
+                for event in self.journal.get_legs_for_position(pos["position_id"])
+                if event.get("kind") == "close_spread"
+            ]
+            if not closes:
+                return True
+            raw = closes[-1].get("raw_broker_fill") or "{}"
+            try:
+                payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {}
+            if payload.get("fill_source") != "broker":
+                return True
+        return False
 
     def _confirm_live(self, signal) -> bool:
         """Operator-supplied confirmation hook. Default: always reject live.
@@ -403,9 +467,9 @@ class Executor:
         OR IGNORE on duplicate. Also calls risk.record_close so the
         daily/weekly P&L counters and kill-switch caps stay current.
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        since = datetime.now(UTC) - timedelta(hours=24)
         filled = self.broker.list_filled_orders(since_ts=since)
         if not filled:
             return 0
@@ -415,8 +479,56 @@ class Executor:
             coid = getattr(order, "client_order_id", None) or ""
             if not coid:
                 continue
-            # Already recorded? (Defense in depth — journal.append is idempotent too.)
-            if self.journal.has_event(coid):
+            existing = self.journal.get_event(coid)
+            if existing and existing.get("kind") in ("open_spread", "close_spread"):
+                raw = existing.get("raw_broker_fill") or "{}"
+                try:
+                    raw_payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    raw_payload = {}
+                fill_price = abs(float(order.filled_avg_price or 0.0))
+                if fill_price <= 0 or raw_payload.get("fill_source") == "broker":
+                    continue
+                raw_payload.update(
+                    {
+                        "order_id": str(order.id),
+                        "status": str(order.status),
+                        "filled_at": str(order.filled_at),
+                        "filled_avg_price": fill_price,
+                        "fill_source": "broker",
+                    }
+                )
+                realized_pnl = float(existing.get("realized_pnl") or 0.0)
+                if existing["kind"] == "close_spread":
+                    entry_credit = float(raw_payload.get("entry_credit") or 0.0)
+                    realized_pnl = (entry_credit - fill_price) * int(existing.get("qty") or 0) * 100
+                canonical = TradeEvent(
+                    event_id=coid,
+                    ts=str(order.filled_at) if order.filled_at else Journal.now_iso(),
+                    kind=existing["kind"],
+                    symbol=str(existing["symbol"]),
+                    side=("buy" if existing["side"] == "buy" else "sell"),
+                    qty=int(order.filled_qty or existing.get("qty") or 0),
+                    price=fill_price,
+                    position_id=str(existing.get("position_id") or ""),
+                    realized_pnl=round(realized_pnl, 2),
+                    strategy_id="bull_put_credit_spread",
+                    raw_broker_fill=raw_payload,
+                )
+                self.journal.upsert(canonical)
+                n_written += 1
+                if canonical.kind == "close_spread":
+                    state = self.risk.load_state()
+                    self.risk.record_close(
+                        state,
+                        pnl=canonical.realized_pnl,
+                        event_id=coid,
+                        payload=f"{canonical.symbol} realized={canonical.realized_pnl:.2f}",
+                    )
+                continue
+
+            # Already recorded non-spread fill? Defense in depth.
+            if existing:
                 continue
 
             # Determine kind from the order side
@@ -485,20 +597,20 @@ class Executor:
         We track which orders we've already cancelled via the journal's
         raw_broker_fill JSON, so we don't cancel the same order twice.
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         opens = self.broker.list_open_orders()
         if not opens:
             return 0
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         n_cancelled = 0
         for order in opens:
             submitted = getattr(order, "submitted_at", None)
             if submitted is None:
                 continue
             if submitted.tzinfo is None:
-                submitted = submitted.replace(tzinfo=timezone.utc)
+                submitted = submitted.replace(tzinfo=UTC)
             age = (now - submitted).total_seconds()
             if age < older_than_seconds:
                 continue
@@ -518,7 +630,9 @@ class Executor:
                 self.broker.cancel_order(str(order.id))
                 log.warning(
                     "cancelled stale order %s (submitted=%s, age=%ds)",
-                    coid, submitted, int(age),
+                    coid,
+                    submitted,
+                    int(age),
                 )
                 n_cancelled += 1
             except Exception as e:
@@ -536,22 +650,14 @@ class Executor:
         of the parent buy). So we look for a buy with the same symbol
         whose order_id appears in trades.raw_broker_fill.
         """
-        import json as _json
         import sqlite3
+
         with sqlite3.connect(self.journal.db_path) as conn:
             rows = conn.execute(
                 "SELECT position_id, raw_broker_fill FROM trades "
                 "WHERE kind = 'open' AND symbol = ?",
                 (symbol,),
             ).fetchall()
-        for pos_id, raw in rows:
-            if not raw:
-                continue
-            try:
-                data = _json.loads(raw)
-            except _json.JSONDecodeError:
-                continue
-            # open event's raw may not contain coid; match on symbol + last-bought heuristic.
         # Fallback: return the most-recent open position for this symbol.
         if rows:
             return rows[-1][0]
