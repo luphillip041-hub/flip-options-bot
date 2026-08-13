@@ -121,7 +121,50 @@ class Journal:
                     conn.execute(col_ddl)
                 except sqlite3.OperationalError:
                     pass  # column already exists
+            self._backfill_missing_positions(conn)
             conn.commit()
+
+    def _backfill_missing_positions(self, conn: sqlite3.Connection) -> None:
+        """Create position rows for older open/open_spread events.
+
+        Commit 04afba5 introduced open_spread before positions-state knew
+        how to materialize it. This migration makes the live filled spread
+        visible to the monitor on restart, without duplicating existing rows.
+        """
+        rows = conn.execute(
+            """
+            SELECT DISTINCT position_id FROM trades
+            WHERE position_id IS NOT NULL AND position_id != ''
+              AND kind IN ('open', 'open_spread')
+              AND position_id NOT IN (SELECT position_id FROM positions)
+            """
+        ).fetchall()
+        for (position_id,) in rows:
+            open_rows = conn.execute(
+                """
+                SELECT ts, symbol, qty, price, strategy_id FROM trades
+                WHERE position_id = ? AND kind IN ('open', 'open_spread')
+                ORDER BY ts
+                """,
+                (position_id,),
+            ).fetchall()
+            if not open_rows:
+                continue
+            qty_open = sum(int(r[2] or 0) for r in open_rows)
+            avg_entry = (
+                sum(float(r[2] or 0) * float(r[3] or 0.0) for r in open_rows) / qty_open
+                if qty_open > 0 else 0.0
+            )
+            first = open_rows[0]
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO positions (
+                    position_id, symbol, opened_at, qty_open,
+                    avg_entry_price, strategy_id, state
+                ) VALUES (?, ?, ?, ?, ?, ?, 'open')
+                """,
+                (position_id, first[1], first[0], qty_open, avg_entry, first[4] or ""),
+            )
 
     def append(self, event: TradeEvent) -> bool:
         """Idempotent append. Returns True if written, False if already existed.
@@ -210,7 +253,7 @@ class Journal:
     def _update_position_state(self, conn: sqlite3.Connection, event: TradeEvent) -> None:
         if not event.position_id:
             return
-        if event.kind == "open":
+        if event.kind in ("open", "open_spread"):
             conn.execute(
                 """
                 INSERT INTO positions (
@@ -229,16 +272,16 @@ class Journal:
                     event.strategy_id,
                 ),
             )
-        elif event.kind == "close":
+        elif event.kind in ("close", "close_spread"):
             # Idempotent recompute from the canonical trades table.
             # This is safe for upserts (the same event_id arriving twice
             # produces the same totals).
             row = conn.execute(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN kind='open' THEN qty ELSE 0 END), 0) AS qty_open_total,
-                    COALESCE(SUM(CASE WHEN kind='close' THEN qty ELSE 0 END), 0) AS qty_closed_total,
-                    COALESCE(SUM(CASE WHEN kind='close' THEN realized_pnl ELSE 0 END), 0) AS realized_total
+                    COALESCE(SUM(CASE WHEN kind IN ('open', 'open_spread') THEN qty ELSE 0 END), 0) AS qty_open_total,
+                    COALESCE(SUM(CASE WHEN kind IN ('close', 'close_spread') THEN qty ELSE 0 END), 0) AS qty_closed_total,
+                    COALESCE(SUM(CASE WHEN kind IN ('close', 'close_spread') THEN realized_pnl ELSE 0 END), 0) AS realized_total
                 FROM trades WHERE position_id = ?
                 """,
                 (event.position_id,),
@@ -249,7 +292,7 @@ class Journal:
             close_rows = conn.execute(
                 """
                 SELECT qty, price FROM trades
-                WHERE position_id = ? AND kind = 'close'
+                WHERE position_id = ? AND kind IN ('close', 'close_spread')
                 """,
                 (event.position_id,),
             ).fetchall()
@@ -381,7 +424,7 @@ class Journal:
     def total_realized_pnl(self) -> float:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
-                "SELECT COALESCE(SUM(realized_pnl), 0) FROM trades WHERE kind = 'close'"
+                "SELECT COALESCE(SUM(realized_pnl), 0) FROM trades WHERE kind IN ('close', 'close_spread')"
             ).fetchone()
         return float(row[0]) if row else 0.0
 

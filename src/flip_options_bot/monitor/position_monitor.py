@@ -38,10 +38,11 @@ instead of tp_full.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from ..broker import BrokerClient
 from ..config import Settings
@@ -111,6 +112,32 @@ class PositionMonitor:
 
             symbol = pos.get("symbol", "")
             position_id = pos.get("position_id", "")
+            strategy_id = pos.get("strategy_id", "") or ""
+
+            if strategy_id == "bull_put_credit_spread" or symbol.startswith("BPCS:"):
+                spread_decision = self._evaluate_spread_position(pos, qty, state)
+                if spread_decision is None:
+                    continue
+                trigger, short_sym, long_sym, short_limit, long_limit, entry_credit = spread_decision
+                close = self.closer.flatten_credit_spread(
+                    position_id=position_id,
+                    short_put_symbol=short_sym,
+                    long_put_symbol=long_sym,
+                    qty=qty,
+                    short_put_limit=short_limit,
+                    long_put_limit=long_limit,
+                    entry_credit=entry_credit,
+                    reason=trigger,
+                )
+                if close.accepted:
+                    result.closes_triggered += 1
+                    result.reasons[trigger] = result.reasons.get(trigger, 0) + 1
+                    log.info(
+                        "monitor close spread %s/%s qty=%d trigger=%s debit=%.2f",
+                        short_sym, long_sym, qty, trigger, max(short_limit - long_limit, 0.01),
+                    )
+                continue
+
             avg_entry_raw = pos.get("avg_entry_price")
             avg_entry = float(avg_entry_raw) if avg_entry_raw is not None else 0.0
             peak_mark_raw = pos.get("peak_mark")
@@ -240,6 +267,99 @@ class PositionMonitor:
                 return ("eod", qty, limit_price)
 
         return None
+
+    def _evaluate_spread_position(
+        self,
+        pos: dict,
+        qty: int,
+        state: RiskState,
+    ) -> tuple[str, str, str, float, float, float] | None:
+        """Evaluate a BPCS as ONE logical position.
+
+        For a credit spread, entry is a credit and close is a debit:
+          close_debit = short_put_ask - long_put_bid
+
+        Profit target: buy back at 50% of credit.
+        Stop: buy back at 2x credit (loss ~= credit received), bounded by
+        spread width in reality. This is intentionally conservative.
+        DTE exit: close at configured bpcs_close_at_dte to avoid gamma risk.
+        """
+        position_id = pos.get("position_id", "")
+        legs = self.journal.get_legs_for_position(position_id)
+        open_spread = next((l for l in legs if l.get("kind") == "open_spread"), None)
+        if not open_spread:
+            return None
+
+        raw = open_spread.get("raw_broker_fill") or "{}"
+        if isinstance(raw, str):
+            try:
+                raw_payload = json.loads(raw)
+            except json.JSONDecodeError:
+                raw_payload = {}
+        elif isinstance(raw, dict):
+            raw_payload = raw
+        else:
+            raw_payload = {}
+
+        short_sym = raw_payload.get("short_leg", "")
+        long_sym = raw_payload.get("long_leg", "")
+        if not short_sym or not long_sym:
+            symbol = pos.get("symbol", "")
+            if symbol.startswith("BPCS:") and "/" in symbol:
+                pair = symbol.removeprefix("BPCS:")
+                short_sym, long_sym = pair.split("/", 1)
+        if not short_sym or not long_sym:
+            return None
+
+        expiry = self._occ_expiry(short_sym)
+        short_snap = self.broker.get_option_snapshot(short_sym, expiry=expiry) or {}
+        long_snap = self.broker.get_option_snapshot(long_sym, expiry=expiry) or {}
+        short_ask = float(short_snap.get("ask") or 0.0) if isinstance(short_snap, dict) else 0.0
+        long_bid = float(long_snap.get("bid") or 0.0) if isinstance(long_snap, dict) else 0.0
+        if short_ask <= 0 or long_bid <= 0:
+            # No fresh executable quote; fail closed by doing nothing.
+            return None
+
+        close_debit = max(short_ask - long_bid, 0.01)
+        entry_credit = float(pos.get("avg_entry_price") or open_spread.get("price") or 0.0)
+        if entry_credit <= 0:
+            return None
+
+        # 1) Profit target: capture configured % of received credit.
+        target_debit = entry_credit * (1.0 - self.settings.bpcs_profit_target_pct)
+        if close_debit <= target_debit:
+            return ("bpcs_tp", short_sym, long_sym, short_ask, long_bid, entry_credit)
+
+        # 2) Risk stop: debit has doubled vs entry credit.
+        if close_debit >= entry_credit * 2.0:
+            return ("bpcs_sl", short_sym, long_sym, short_ask, long_bid, entry_credit)
+
+        # 3) DTE exit to avoid gamma risk.
+        exp_date = self._occ_expiry_date(short_sym)
+        if exp_date is not None:
+            dte = (exp_date - date.today()).days
+            if dte <= self.settings.bpcs_close_at_dte:
+                return ("bpcs_dte_exit", short_sym, long_sym, short_ask, long_bid, entry_credit)
+
+        return None
+
+    @staticmethod
+    def _occ_expiry(contract_symbol: str) -> str | None:
+        exp = PositionMonitor._occ_expiry_date(contract_symbol)
+        return exp.isoformat() if exp else None
+
+    @staticmethod
+    def _occ_expiry_date(contract_symbol: str) -> date | None:
+        # Root length can vary. The OCC date is the 6 digits immediately before C/P + strike.
+        import re
+        m = re.match(r"^[A-Z]+(\d{6})[CP]\d{8}$", contract_symbol)
+        if not m:
+            return None
+        yymmdd = m.group(1)
+        try:
+            return date(2000 + int(yymmdd[:2]), int(yymmdd[2:4]), int(yymmdd[4:6]))
+        except ValueError:
+            return None
 
     def _exit_price(self, trigger: str, mark: float, avg_entry: float) -> float:
         """Compute the limit price for the close order.

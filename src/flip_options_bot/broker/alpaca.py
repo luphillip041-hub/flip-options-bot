@@ -484,6 +484,56 @@ class BrokerClient:
         )
         return self.trading.submit_order(req)
 
+    def submit_close_credit_spread(
+        self,
+        short_put_symbol: str,
+        long_put_symbol: str,
+        short_put_limit: float,
+        long_put_limit: float,
+        qty: int,
+        client_order_id: str,
+        position_id: str,
+    ) -> AlpacaOrder:
+        """Close a BPCS as a single multi-leg (MLEG) debit order.
+
+        Closing a bull put credit spread means:
+          - BUY_TO_CLOSE the short put (pay the ask)
+          - SELL_TO_CLOSE the long put (receive the bid)
+
+        The net close debit per share is short_put_limit - long_put_limit.
+        Keep this atomic so we never leave one leg open.
+        """
+        from alpaca.trading.requests import OptionLegRequest
+        from alpaca.trading.enums import OrderClass, PositionIntent
+
+        net_debit = max(short_put_limit - long_put_limit, 0.01)
+        req = LimitOrderRequest(
+            order_class=OrderClass.MLEG,
+            qty=qty,
+            time_in_force=TimeInForce.GTC,
+            limit_price=round(net_debit, 2),
+            client_order_id=client_order_id,
+            legs=[
+                OptionLegRequest(
+                    symbol=short_put_symbol,
+                    ratio_qty=1,
+                    side=OrderSide.BUY,
+                    position_intent=PositionIntent.BUY_TO_CLOSE,
+                ),
+                OptionLegRequest(
+                    symbol=long_put_symbol,
+                    ratio_qty=1,
+                    side=OrderSide.SELL,
+                    position_intent=PositionIntent.SELL_TO_CLOSE,
+                ),
+            ],
+        )
+        log.info(
+            "submit_close_credit_spread short=%s long=%s qty=%d net_debit=%.2f coid=%s pos=%s",
+            short_put_symbol, long_put_symbol, qty, net_debit, client_order_id, position_id,
+        )
+        return self.trading.submit_order(req)
+
     def _tif_for_contract(self, contract_symbol: str) -> TimeInForce:
         """Return DAY for 0DTE contracts (today's expiry), GTC otherwise.
 

@@ -23,8 +23,10 @@ import pytest
 
 from flip_options_bot.broker.alpaca import BrokerClient
 from flip_options_bot.config import Settings, get_settings
+from flip_options_bot.execution import Closer
 from flip_options_bot.execution.executor import Executor
 from flip_options_bot.journal import Journal, TradeEvent
+from flip_options_bot.monitor.position_monitor import PositionMonitor
 from flip_options_bot.risk import RiskEngine, RiskState
 from flip_options_bot.signal import FunnelRecorder
 from flip_options_bot.signal.scanner import Scanner
@@ -328,3 +330,118 @@ def test_executor_submit_bpcs_mleg_event_has_both_legs_in_payload(tmp_path: Path
     assert fill_data.get('order_class') == 'MLEG'
     assert fill_data.get('short_leg') == 'SPY_PUT95'
     assert fill_data.get('long_leg') == 'SPY_PUT90'
+
+
+def test_open_spread_materializes_position_row(tmp_path: Path):
+    """open_spread must be visible to the position monitor as one logical position."""
+    journal = Journal(tmp_path)
+    pid = journal.new_position_id()
+    journal.append(TradeEvent(
+        event_id='spread-open-1', ts=journal.now_iso(), kind='open_spread',
+        symbol='BPCS:IWM260918P00296000/IWM260918P00290000', side='sell', qty=1,
+        price=1.43, position_id=pid, strategy_id='bull_put_credit_spread',
+        raw_broker_fill={
+            'order_class': 'MLEG',
+            'short_leg': 'IWM260918P00296000',
+            'long_leg': 'IWM260918P00290000',
+        },
+    ))
+    rows = journal.get_open_positions()
+    assert len(rows) == 1
+    assert rows[0]['position_id'] == pid
+    assert rows[0]['symbol'].startswith('BPCS:')
+    assert rows[0]['qty_open'] == 1
+    assert rows[0]['avg_entry_price'] == pytest.approx(1.43)
+
+
+def test_backfills_existing_open_spread_without_position_row(tmp_path: Path):
+    """Older 04afba5 journals had open_spread trades but no positions row."""
+    journal = Journal(tmp_path)
+    pid = journal.new_position_id()
+    # Simulate the old bug by writing directly into trades, bypassing append().
+    import sqlite3
+    with sqlite3.connect(journal.db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO trades (event_id, ts, kind, symbol, side, qty, price, position_id, strategy_id, raw_broker_fill)
+            VALUES (?, ?, 'open_spread', ?, 'sell', 1, 1.43, ?, 'bull_put_credit_spread', ?)
+            """,
+            ('legacy-spread', journal.now_iso(), 'BPCS:IWM260918P00296000/IWM260918P00290000', pid,
+             json.dumps({'short_leg': 'IWM260918P00296000', 'long_leg': 'IWM260918P00290000'})),
+        )
+        conn.commit()
+    assert journal.get_open_positions() == []
+    # Re-instantiating Journal runs migration/backfill.
+    journal2 = Journal(tmp_path)
+    rows = journal2.get_open_positions()
+    assert len(rows) == 1
+    assert rows[0]['position_id'] == pid
+
+
+def test_closer_flatten_credit_spread_writes_close_spread(tmp_path: Path):
+    settings = Settings(phase='paper', live_trade_enabled=False, run_dir=tmp_path)
+    broker = MagicMock(spec=BrokerClient)
+    spread_order = MagicMock(id='close-spread-oid', status='ACCEPTED', submitted_at='now')
+    broker.submit_close_credit_spread = MagicMock(return_value=spread_order)
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    closer = Closer(settings, broker, journal, risk)
+
+    pid = journal.new_position_id()
+    res = closer.flatten_credit_spread(
+        position_id=pid,
+        short_put_symbol='IWM260918P00296000',
+        long_put_symbol='IWM260918P00290000',
+        qty=1,
+        short_put_limit=3.00,
+        long_put_limit=2.00,
+        entry_credit=1.43,
+        reason='bpcs_tp',
+    )
+    assert res.accepted is True
+    broker.submit_close_credit_spread.assert_called_once()
+    legs = journal.get_legs_for_position(pid)
+    assert len(legs) == 1
+    assert legs[0]['kind'] == 'close_spread'
+    assert legs[0]['price'] == pytest.approx(1.0)
+    assert legs[0]['realized_pnl'] == pytest.approx(43.0)
+
+
+def test_position_monitor_bpcs_tp_closes_atomically(tmp_path: Path):
+    settings = Settings(
+        phase='paper', live_trade_enabled=False, run_dir=tmp_path,
+        bpcs_profit_target_pct=0.50,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    # close_debit = short ask 2.50 - long bid 1.90 = 0.60;
+    # entry credit 1.43 -> target debit 0.715, so TP should fire.
+    broker.get_option_snapshot.side_effect = [
+        {'bid': 2.45, 'ask': 2.50},
+        {'bid': 1.90, 'ask': 1.95},
+    ]
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    state = risk.load_state()
+    closer = MagicMock(spec=Closer)
+    closer.flatten_credit_spread.return_value = MagicMock(accepted=True)
+    monitor = PositionMonitor(settings, broker, journal, risk, closer)
+
+    pid = journal.new_position_id()
+    journal.append(TradeEvent(
+        event_id='spread-open-2', ts=journal.now_iso(), kind='open_spread',
+        symbol='BPCS:IWM260918P00296000/IWM260918P00290000', side='sell', qty=1,
+        price=1.43, position_id=pid, strategy_id='bull_put_credit_spread',
+        raw_broker_fill={
+            'order_class': 'MLEG',
+            'short_leg': 'IWM260918P00296000',
+            'long_leg': 'IWM260918P00290000',
+        },
+    ))
+    tick = monitor.tick(state)
+    assert tick.closes_triggered == 1
+    assert tick.reasons['bpcs_tp'] == 1
+    closer.flatten_credit_spread.assert_called_once()
+    kwargs = closer.flatten_credit_spread.call_args.kwargs
+    assert kwargs['short_put_symbol'] == 'IWM260918P00296000'
+    assert kwargs['long_put_symbol'] == 'IWM260918P00290000'
+    assert kwargs['entry_credit'] == pytest.approx(1.43)

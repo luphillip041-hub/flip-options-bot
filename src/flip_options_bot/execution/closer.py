@@ -132,6 +132,78 @@ class Closer:
             position_id=position_id,
         )
 
+    def flatten_credit_spread(
+        self,
+        *,
+        position_id: str,
+        short_put_symbol: str,
+        long_put_symbol: str,
+        qty: int,
+        short_put_limit: float,
+        long_put_limit: float,
+        entry_credit: float,
+        reason: str = "monitor",
+    ) -> CloseResult:
+        """Close a bull put credit spread atomically via an MLEG order.
+
+        The close price is a net debit: buy short put at short_put_limit,
+        sell long put at long_put_limit. The realized P&L approximation is
+        (entry_credit - close_debit) * 100 * qty. Reconcile can later
+        overwrite with broker-canonical fills.
+        """
+        if qty <= 0:
+            return CloseResult(accepted=False, reason="zero_qty")
+        if not short_put_symbol or not long_put_symbol:
+            return CloseResult(accepted=False, reason="missing_leg_symbol")
+
+        coid = f"close-spread-{uuid.uuid4()}"
+        close_debit = max(short_put_limit - long_put_limit, 0.01)
+        try:
+            order = self.broker.submit_close_credit_spread(
+                short_put_symbol=short_put_symbol,
+                long_put_symbol=long_put_symbol,
+                short_put_limit=round(short_put_limit, 2),
+                long_put_limit=round(long_put_limit, 2),
+                qty=qty,
+                client_order_id=coid,
+                position_id=position_id,
+            )
+        except Exception as e:
+            log.error("submit_close_credit_spread failed for %s/%s: %s", short_put_symbol, long_put_symbol, e)
+            return CloseResult(accepted=False, reason=f"broker_error: {e}")
+
+        realized = (float(entry_credit) - close_debit) * 100 * qty
+        event = TradeEvent(
+            event_id=coid,
+            ts=Journal.now_iso(),
+            kind="close_spread",
+            symbol=f"BPCS:{short_put_symbol}/{long_put_symbol}",
+            side="buy",
+            qty=qty,
+            price=round(close_debit, 2),
+            position_id=position_id,
+            realized_pnl=round(realized, 2),
+            strategy_id="bull_put_credit_spread",
+            raw_broker_fill={
+                "order_id": str(getattr(order, "id", "")),
+                "status": str(getattr(order, "status", "")),
+                "order_class": "MLEG",
+                "short_leg": short_put_symbol,
+                "long_leg": long_put_symbol,
+                "submitted_at": str(getattr(order, "submitted_at", "")),
+                "close_reason": reason,
+                "close_position_id": position_id,
+                "entry_credit": entry_credit,
+                "close_debit": close_debit,
+            },
+        )
+        self.journal.append(event)
+        log.info(
+            "flatten spread %s/%s qty=%d debit=%.2f pnl=%.2f reason=%s coid=%s",
+            short_put_symbol, long_put_symbol, qty, close_debit, realized, reason, coid,
+        )
+        return CloseResult(accepted=True, client_order_id=coid, position_id=position_id)
+
     def flatten_all(self, state: RiskState, reason: str = "panic") -> int:
         """Flatten every open position. Used by kill_switch and panic_close."""
         n = 0
@@ -143,6 +215,37 @@ class Closer:
             qty = qty_open - qty_closed
             if qty <= 0 or not symbol:
                 continue
+
+            if (pos.get("strategy_id") == "bull_put_credit_spread" or symbol.startswith("BPCS:")):
+                legs = self.journal.get_legs_for_position(pos["position_id"])
+                import json as _json
+                open_spread = next((l for l in legs if l.get("kind") == "open_spread"), None)
+                raw = open_spread.get("raw_broker_fill") if open_spread else None
+                payload = _json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+                pair = symbol.removeprefix("BPCS:") if symbol.startswith("BPCS:") else ""
+                short_sym = payload.get("short_leg", "")
+                long_sym = payload.get("long_leg", "")
+                if (not short_sym or not long_sym) and "/" in pair:
+                    short_sym, long_sym = pair.split("/", 1)
+                short_snap = self.broker.get_option_snapshot(short_sym) or {}
+                long_snap = self.broker.get_option_snapshot(long_sym) or {}
+                short_ask = float(short_snap.get("ask") or 0.0) if isinstance(short_snap, dict) else 0.0
+                long_bid = float(long_snap.get("bid") or 0.0) if isinstance(long_snap, dict) else 0.0
+                if short_sym and long_sym and short_ask > 0 and long_bid > 0:
+                    result = self.flatten_credit_spread(
+                        position_id=pos["position_id"],
+                        short_put_symbol=short_sym,
+                        long_put_symbol=long_sym,
+                        qty=qty,
+                        short_put_limit=short_ask,
+                        long_put_limit=long_bid,
+                        entry_credit=float(pos.get("avg_entry_price") or 0.0),
+                        reason=reason,
+                    )
+                    if result.accepted:
+                        n += 1
+                continue
+
             # Use a conservative limit price (ask fallback). If we have no
             # snapshot, submit at the avg_entry_price as the limit — broker
             # may reject (below market for a long). Better than nothing.
