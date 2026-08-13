@@ -266,22 +266,23 @@ class RiskEngine:
         if state.kill_switch:
             return self.Decision(allowed=False, reason=f"kill_switch: {state.kill_reason}")
 
-        # === 3. Per-trade risk ===
-        max_debit = equity * (self.settings.per_trade_risk_pct / 100.0)
-        if proposed_debit > max_debit:
-            return self.Decision(
-                allowed=False,
-                reason=f"per_trade_risk: {proposed_debit:.2f} > {max_debit:.2f}",
-            )
-
-        # === 4. Max contract dollar cap ===
-        if proposed_debit * 100 > self.settings.max_contract_dollar:
+        # === 3. Per-contract dollar sanity ===
+        per_contract_debit = proposed_debit * 100
+        if per_contract_debit > self.settings.max_contract_dollar:
             return self.Decision(
                 allowed=False,
                 reason=(
-                    f"max_contract_dollar: {proposed_debit * 100:.0f} > "
+                    f"max_contract_dollar: {per_contract_debit:.0f} > "
                     f"{self.settings.max_contract_dollar}"
                 ),
+            )
+
+        # === 4. Per-trade risk ===
+        max_debit = equity * (self.settings.per_trade_risk_pct / 100.0)
+        if per_contract_debit > max_debit:
+            return self.Decision(
+                allowed=False,
+                reason=f"per_trade_risk: {per_contract_debit:.2f} > {max_debit:.2f}",
             )
 
         # === 5. Position count ===
@@ -294,8 +295,12 @@ class RiskEngine:
                 ),
             )
 
-        # All gates passed. Compute contracts.
-        contracts = max(1, int(self.settings.max_contract_dollar / max(proposed_debit * 100, 1)))
+        # All gates passed. Compute contracts from the smaller of the
+        # absolute contract-dollar cap and the per-trade equity-risk cap.
+        # Contract premium risk is option_price * 100; never size from the
+        # quote price alone.
+        budget = min(self.settings.max_contract_dollar, max_debit)
+        contracts = max(1, int(budget / max(per_contract_debit, 1)))
         # Cap at max-positions remaining
         contracts = min(contracts, self.settings.max_positions - state.open_position_count)
         return self.Decision(allowed=True, contracts=contracts)

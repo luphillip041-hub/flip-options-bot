@@ -353,7 +353,8 @@ class Scanner:
         if spot_quote is None:
             return signals
         spot = (spot_quote["bid"] + spot_quote["ask"]) / 2
-        eligible.sort(key=lambda c: abs(c["strike"] - spot))
+        target_strike = spot * (1.0 - filters.target_otm_pct)
+        eligible.sort(key=lambda c: abs(c["strike"] - target_strike))
 
         for c in eligible:
             snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
@@ -389,7 +390,10 @@ class Scanner:
                 ts=now.isoformat(),
             ))
 
-        signals.sort(key=lambda s: s.conviction, reverse=True)
+        signals.sort(
+            key=lambda s: (s.conviction, -abs(s.strike - target_strike)),
+            reverse=True,
+        )
         return signals[:3]
 
     def _scan_long_equity_symbol(
@@ -517,6 +521,8 @@ class Scanner:
         if spot_quote is None:
             return signals
         spot = (spot_quote["bid"] + spot_quote["ask"]) / 2
+        target_strike = spot * (1.0 + filters.target_otm_pct)
+        eligible.sort(key=lambda c: abs(c["strike"] - target_strike))
 
         for c in eligible:
             snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
@@ -567,8 +573,11 @@ class Scanner:
                 ts=now.isoformat(),
             ))
 
-        # Keep top N by conviction
-        signals.sort(key=lambda s: s.conviction, reverse=True)
+        # Keep top N by conviction, tie-breaking toward the configured OTM target.
+        signals.sort(
+            key=lambda s: (s.conviction, -abs(s.strike - target_strike)),
+            reverse=True,
+        )
         return signals[:3]
 
     def _compute_features(

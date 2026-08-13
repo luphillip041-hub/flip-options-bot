@@ -66,6 +66,11 @@ class Executor:
         """
         if signal.strategy_id not in {"long_call", "long_put"}:
             return ExecutionResult(accepted=False, reason=f"unknown strategy {signal.strategy_id}")
+        underlying = self._occ_underlying(signal.symbol)
+        if underlying and self._has_open_directional_underlying(underlying):
+            reason = f"duplicate_directional_underlying:{underlying}"
+            log.info("risk denied %s: %s", signal.symbol, reason)
+            return ExecutionResult(accepted=False, reason=reason)
 
         # === Risk gate ===
         decision = self.risk.evaluate_pre_trade(
@@ -150,6 +155,18 @@ class Executor:
                 "tp_price": tp_price,
                 "sl_trigger_price": sl_trigger,
                 "sl_limit_price": sl_limit,
+                "strategy_id": signal.strategy_id,
+                "option_type": signal.option_type,
+                "expiry": signal.expiry,
+                "strike": signal.strike,
+                "dte": signal.dte,
+                "conviction": signal.conviction,
+                "submitted_limit_price": signal.limit_price,
+                "target_otm_pct": (
+                    self.settings.long_call_target_otm_pct
+                    if signal.strategy_id == "long_call"
+                    else self.settings.long_put_target_otm_pct
+                ),
             },
         )
         written = self.journal.append(event)
@@ -185,7 +202,7 @@ class Executor:
         self.risk.record_open(
             state,
             symbol=signal.symbol,
-            debit=signal.limit_price * decision.contracts,
+            debit=signal.limit_price * 100 * decision.contracts,
             event_id=coid,
         )
 
@@ -421,6 +438,23 @@ class Executor:
         match = re.match(r"^([A-Z]+)\d{6}[CP]\d{8}$", contract_symbol or "")
         return match.group(1) if match else ""
 
+    def _has_open_directional_underlying(self, underlying: str) -> bool:
+        """Avoid stacking same-underlying long premium positions.
+
+        Long calls and long puts are high-gamma 0DTE exposures. One open
+        directional option per underlying keeps the data clean and prevents
+        accidental same-symbol lottery stacking.
+        """
+        for pos in self.journal.get_all_positions():
+            if pos.get("strategy_id") not in {"long_call", "long_put"}:
+                continue
+            if pos.get("state") not in ("open", "partial"):
+                continue
+            pos_underlying = self._occ_underlying(str(pos.get("symbol") or ""))
+            if pos_underlying == underlying:
+                return True
+        return False
+
     def _has_open_bpcs_underlying(self, underlying: str) -> bool:
         """One logical credit-spread exposure per underlying at a time.
 
@@ -481,7 +515,7 @@ class Executor:
             if not coid:
                 continue
             existing = self.journal.get_event(coid)
-            if existing and existing.get("kind") in ("open_spread", "close_spread"):
+            if existing and existing.get("kind") in ("open", "close", "open_spread", "close_spread"):
                 raw = existing.get("raw_broker_fill") or "{}"
                 try:
                     raw_payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
@@ -503,26 +537,36 @@ class Executor:
                         "fill_source": "broker",
                     }
                 )
+                kind = str(existing["kind"])
                 realized_pnl = float(existing.get("realized_pnl") or 0.0)
-                if existing["kind"] == "close_spread":
+                strategy_id = str(existing.get("strategy_id") or "")
+                if kind == "close_spread":
                     entry_credit = float(raw_payload.get("entry_credit") or 0.0)
                     realized_pnl = (entry_credit - fill_price) * int(existing.get("qty") or 0) * 100
+                    strategy_id = "bull_put_credit_spread"
+                elif kind == "close":
+                    pos = self.journal.get_position_for_id(str(existing.get("position_id") or ""))
+                    avg_entry = float(pos.get("avg_entry_price") or 0.0) if pos else 0.0
+                    realized_pnl = (fill_price - avg_entry) * int(existing.get("qty") or 0) * 100
+                    if pos and not strategy_id:
+                        strategy_id = str(pos.get("strategy_id") or "")
+
                 canonical = TradeEvent(
                     event_id=coid,
                     ts=str(order.filled_at) if order.filled_at else Journal.now_iso(),
-                    kind=existing["kind"],
+                    kind=kind,  # type: ignore[arg-type]
                     symbol=str(existing["symbol"]),
                     side=("buy" if existing["side"] == "buy" else "sell"),
                     qty=int(order.filled_qty or existing.get("qty") or 0),
                     price=fill_price,
                     position_id=str(existing.get("position_id") or ""),
                     realized_pnl=round(realized_pnl, 2),
-                    strategy_id="bull_put_credit_spread",
+                    strategy_id=strategy_id,
                     raw_broker_fill=raw_payload,
                 )
                 self.journal.upsert(canonical)
                 n_written += 1
-                if canonical.kind == "close_spread":
+                if canonical.kind in ("close", "close_spread"):
                     state = self.risk.load_state()
                     self.risk.record_close(
                         state,
@@ -532,7 +576,7 @@ class Executor:
                     )
                 continue
 
-            # Already recorded non-spread fill? Defense in depth.
+            # Already recorded unknown fill? Defense in depth.
             if existing:
                 continue
 

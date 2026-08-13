@@ -121,10 +121,22 @@ def test_max_positions_enforced(engine: RiskEngine):
     assert "max_positions" in decision.reason
 
 
-def test_per_trade_risk_enforced(engine: RiskEngine):
-    """proposed_debit = $300 on $10k equity = 3% > 2% per-trade cap."""
+def test_per_trade_risk_enforced(tmp_path: Path):
+    """$2.50 option = $250/contract on $10k equity = 2.5% > 2% cap."""
+    settings = Settings(
+        phase="paper",
+        live_trade_enabled=False,
+        equity_start=10_000.0,
+        max_positions=3,
+        per_trade_risk_pct=2.0,
+        daily_loss_cap_pct=6.0,
+        weekly_loss_cap_pct=12.0,
+        max_contract_dollar=5000,
+        run_dir=tmp_path,
+    )
+    engine = RiskEngine(settings, tmp_path)
     state = RiskState()
-    decision = engine.evaluate_pre_trade(state, equity=10_000.0, proposed_debit=300.0)
+    decision = engine.evaluate_pre_trade(state, equity=10_000.0, proposed_debit=2.50)
     assert decision.allowed is False
     assert "per_trade_risk" in decision.reason
 

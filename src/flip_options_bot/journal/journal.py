@@ -227,9 +227,14 @@ class Journal:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_id) DO UPDATE SET
                     ts = excluded.ts,
+                    symbol = excluded.symbol,
+                    side = excluded.side,
+                    qty = excluded.qty,
                     price = excluded.price,
+                    position_id = excluded.position_id,
                     realized_pnl = excluded.realized_pnl,
                     fees = excluded.fees,
+                    strategy_id = excluded.strategy_id,
                     raw_broker_fill = excluded.raw_broker_fill
                 """,
                 (

@@ -67,6 +67,7 @@ class LongCallFilters:
     min_short_momentum_pct: float
     min_conviction: float
     directional_lookback_minutes: int
+    target_otm_pct: float = 0.003
 
 
 def make_filters_from_settings(settings) -> LongCallFilters:
@@ -80,6 +81,7 @@ def make_filters_from_settings(settings) -> LongCallFilters:
         min_short_momentum_pct=settings.long_call_min_short_momentum_pct,
         min_conviction=settings.long_call_min_conviction,
         directional_lookback_minutes=settings.long_call_directional_lookback_minutes,
+        target_otm_pct=settings.long_call_target_otm_pct,
     )
 
 

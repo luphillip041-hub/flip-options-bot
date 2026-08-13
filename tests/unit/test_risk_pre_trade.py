@@ -27,10 +27,10 @@ def _make_engine(tmp_path: Path, **overrides) -> tuple[RiskEngine, Settings]:
 
 
 def test_per_trade_risk_blocks_oversized_debit(tmp_path: Path):
-    risk, _ = _make_engine(tmp_path, per_trade_risk_pct=2.0)
+    risk, _ = _make_engine(tmp_path, per_trade_risk_pct=2.0, max_contract_dollar=5000)
     state = risk.load_state()
-    # Equity $10k * 2% = $200 max debit; debit $250 should be blocked.
-    decision = risk.evaluate_pre_trade(state, equity=10_000.0, proposed_debit=250.0)
+    # Equity $10k * 2% = $200 max debit; $2.50 option = $250/contract should be blocked.
+    decision = risk.evaluate_pre_trade(state, equity=10_000.0, proposed_debit=2.50)
     assert decision.allowed is False
     assert "per_trade_risk" in decision.reason
 
@@ -137,9 +137,9 @@ def test_record_close_idempotent_on_event_id(tmp_path: Path):
 
 
 def test_contracts_computed_from_max_contract_dollar(tmp_path: Path):
-    risk, _ = _make_engine(tmp_path, max_contract_dollar=500, max_positions=3)
+    risk, _ = _make_engine(tmp_path, max_contract_dollar=500, max_positions=3, per_trade_risk_pct=10.0)
     state = risk.load_state()
-    # Proposed debit $1.50/contract → 500 / (1.50*100) = 3.33 → 3 contracts
+    # Proposed debit $1.50/contract → $150 contract risk; $500 cap allows 3 contracts.
     decision = risk.evaluate_pre_trade(state, equity=10_000.0, proposed_debit=1.50)
     assert decision.allowed is True
     assert decision.contracts == 3
