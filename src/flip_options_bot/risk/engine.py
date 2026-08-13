@@ -300,6 +300,52 @@ class RiskEngine:
         contracts = min(contracts, self.settings.max_positions - state.open_position_count)
         return self.Decision(allowed=True, contracts=contracts)
 
+    def evaluate_pre_trade_stock(
+        self,
+        state: RiskState,
+        equity: float,
+        proposed_risk: float,
+    ) -> "RiskEngine.Decision":
+        """Pre-trade gate for long equity fallback.
+
+        Shares are bounded by **stop risk**, not full notional. Notional stays
+        capped by long_equity_max_position_dollar in the scanner/executor.
+        """
+        daily_cap_dollar = equity * (self.settings.daily_loss_cap_pct / 100.0)
+        weekly_cap_dollar = equity * (self.settings.weekly_loss_cap_pct / 100.0)
+        if state.daily_pnl <= -daily_cap_dollar:
+            state.kill_switch = True
+            state.kill_reason = (
+                f"daily_loss_cap_breach: {state.daily_pnl:.2f} <= -{daily_cap_dollar:.2f}"
+            )
+            self._persist_state(state)
+            return self.Decision(allowed=False, reason=state.kill_reason)
+        if state.weekly_pnl <= -weekly_cap_dollar:
+            state.kill_switch = True
+            state.kill_reason = (
+                f"weekly_loss_cap_breach: {state.weekly_pnl:.2f} <= -{weekly_cap_dollar:.2f}"
+            )
+            self._persist_state(state)
+            return self.Decision(allowed=False, reason=state.kill_reason)
+        if state.kill_switch:
+            return self.Decision(allowed=False, reason=f"kill_switch: {state.kill_reason}")
+
+        max_risk = equity * (self.settings.per_trade_risk_pct / 100.0)
+        if proposed_risk > max_risk:
+            return self.Decision(
+                allowed=False,
+                reason=f"long_equity_stop_risk: {proposed_risk:.2f} > {max_risk:.2f}",
+            )
+        if state.open_position_count >= self.settings.max_positions:
+            return self.Decision(
+                allowed=False,
+                reason=(
+                    f"max_positions: {state.open_position_count} >= "
+                    f"{self.settings.max_positions}"
+                ),
+            )
+        return self.Decision(allowed=True, contracts=1)
+
     def evaluate_pre_trade_spread(
         self,
         state: RiskState,

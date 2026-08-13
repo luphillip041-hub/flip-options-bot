@@ -39,6 +39,13 @@ from ..strategies.long_call import (
     pick_target_expiry,
     volatility_regime_ok,
 )
+from ..strategies.long_equity import (
+    LongEquityFilters,
+    LongEquitySignal,
+    compute_conviction as compute_equity_conviction,
+    make_filters_from_settings as make_equity_filters,
+    passes_conviction as passes_equity_conviction,
+)
 
 log = logging.getLogger("flip_options_bot.scanner")
 
@@ -46,7 +53,7 @@ log = logging.getLogger("flip_options_bot.scanner")
 @dataclass
 class ScanResult:
     funnel_row: FunnelRow
-    candidates: list[LongCallSignal]
+    candidates: list[LongCallSignal | LongEquitySignal]
 
 
 @dataclass
@@ -69,12 +76,14 @@ class Scanner:
         filters = make_filters_from_settings(self.settings)
         row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
 
-        candidates: list[LongCallSignal] = []
+        candidates: list[LongCallSignal | LongEquitySignal] = []
         now = datetime.now(timezone.utc)
 
         for symbol in watchlist:
             try:
-                signals = self._scan_symbol(symbol, filters, now)
+                signals: list[LongCallSignal | LongEquitySignal] = list(self._scan_symbol(symbol, filters, now))
+                if self.settings.long_equity_enabled and not signals:
+                    signals.extend(self._scan_long_equity_symbol(symbol, make_equity_filters(self.settings), now))
             except Exception as e:
                 log.warning("scan failed for %s: %s", symbol, e)
                 row.chains_failed.append(symbol)
@@ -280,6 +289,59 @@ class Scanner:
 
     # ===== Internals =====
 
+    def _scan_long_equity_symbol(
+        self, symbol: str, filters: LongEquityFilters, now: datetime
+    ) -> list[LongEquitySignal]:
+        """Find bullish share candidates when calls are not the right vehicle."""
+        signals: list[LongEquitySignal] = []
+        bars = self.broker.get_stock_bars_minute(
+            symbol, lookback_minutes=filters.directional_lookback_minutes + 30
+        )
+        if len(bars) < filters.directional_lookback_minutes:
+            return signals
+        direction_move, vwap_extension, short_momentum = self._compute_features(bars, filters)
+        if direction_move < filters.min_direction_move_pct:
+            return signals
+        if vwap_extension > filters.max_vwap_extension_pct:
+            return signals
+
+        quote = self.broker.get_stock_quote(symbol)
+        if not quote or not quote.get("bid") or not quote.get("ask"):
+            return signals
+        bid = float(quote["bid"])
+        ask = float(quote["ask"])
+        if bid <= 0 or ask <= 0 or ask < bid:
+            return signals
+        mid = (bid + ask) / 2
+        spread = ask - bid
+        spread_pct = spread / max(mid, 0.01)
+        if spread_pct > 0.0025:  # shares should be tight; 25 bps is already wide
+            return signals
+
+        conviction = compute_equity_conviction(
+            direction_move=direction_move,
+            vwap_extension=vwap_extension,
+            short_momentum=short_momentum,
+            filters=filters,
+        )
+        if not passes_equity_conviction(conviction, filters):
+            return signals
+
+        entry_price = round(mid + 0.25 * spread, 2)
+        qty = int(filters.max_position_dollar / max(entry_price, 0.01))
+        if qty <= 0:
+            return signals
+        signals.append(LongEquitySignal(
+            symbol=symbol,
+            qty=qty,
+            limit_price=entry_price,
+            conviction=conviction,
+            stop_price=round(entry_price * (1.0 - filters.stop_loss_pct), 2),
+            take_profit_price=round(entry_price * (1.0 + filters.take_profit_pct), 2),
+            ts=now.isoformat(),
+        ))
+        return signals
+
     def _scan_symbol(
         self, symbol: str, filters: LongCallFilters, now: datetime
     ) -> list[LongCallSignal]:
@@ -407,7 +469,7 @@ class Scanner:
         return signals[:3]
 
     def _compute_features(
-        self, bars: list[dict], filters: LongCallFilters
+        self, bars: list[dict], filters
     ) -> tuple[float, float, float]:
         """Compute direction move, vwap extension, short momentum from minute bars."""
         if len(bars) < filters.directional_lookback_minutes:

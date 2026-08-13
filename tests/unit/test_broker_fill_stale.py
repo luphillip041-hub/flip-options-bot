@@ -50,7 +50,7 @@ def test_list_filled_orders_filters_correctly(tmp_path: Path):
     fake_orders = [
         make_order("SPY260815C00750000", OrderStatus.FILLED, AssetClass.US_OPTION, new_submitted),
         make_order("SPY260815C00751000", OrderStatus.CANCELED, AssetClass.US_OPTION, new_submitted),  # not filled
-        make_order("SPY", OrderStatus.FILLED, AssetClass.US_EQUITY, new_submitted),  # not option
+        make_order("SPY", OrderStatus.FILLED, AssetClass.US_EQUITY, new_submitted),  # filled long-equity fallback
         make_order("SPY260815C00752000", OrderStatus.FILLED, AssetClass.US_OPTION, old_submitted),  # too old
     ]
     broker.trading = MagicMock()
@@ -59,9 +59,9 @@ def test_list_filled_orders_filters_correctly(tmp_path: Path):
     # since_ts = 1 day ago → should accept new_submitted orders
     since = now - timedelta(days=1)
     filled = broker.list_filled_orders(since_ts=since)
-    # Should return exactly 1: the new FILLED option
-    assert len(filled) == 1
-    assert filled[0].symbol == "SPY260815C00750000"
+    # Should return the new FILLED option + filled equity fallback order
+    assert len(filled) == 2
+    assert {o.symbol for o in filled} == {"SPY260815C00750000", "SPY"}
 
 
 def test_list_filled_orders_handles_after_typeerror(tmp_path: Path):

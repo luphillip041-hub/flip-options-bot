@@ -376,6 +376,47 @@ class BrokerClient:
                  contract_symbol, qty, limit_price, client_order_id, position_id, tif)
         return self.trading.submit_order(req)
 
+    def submit_stock_buy(
+        self,
+        symbol: str,
+        qty: int,
+        limit_price: float,
+        client_order_id: str,
+        position_id: str,
+    ) -> AlpacaOrder:
+        """Submit a stock BUY limit order. No market entries."""
+        req = LimitOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+            limit_price=round(limit_price, 2),
+            client_order_id=client_order_id,
+        )
+        log.info("submit_stock_buy %s qty=%d limit=%.2f coid=%s pos=%s",
+                 symbol, qty, limit_price, client_order_id, position_id)
+        return self.trading.submit_order(req)
+
+    def submit_stock_sell(
+        self,
+        symbol: str,
+        qty: int,
+        limit_price: float,
+        client_order_id: str,
+    ) -> AlpacaOrder:
+        """Submit a stock SELL limit order to close."""
+        req = LimitOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+            limit_price=round(limit_price, 2),
+            client_order_id=client_order_id,
+        )
+        log.info("submit_stock_sell %s qty=%d limit=%.2f coid=%s",
+                 symbol, qty, limit_price, client_order_id)
+        return self.trading.submit_order(req)
+
     def submit_close_sell(
         self,
         contract_symbol: str,
@@ -651,7 +692,7 @@ class BrokerClient:
     def list_filled_orders(self, since_ts: datetime | None = None) -> list[AlpacaOrder]:
         """Canonical source for real-fill reconciliation.
 
-        Filters to filled option orders. Critical structural fix vs. the old
+        Filters to filled bot-relevant option/equity orders. Critical structural fix vs. the old
         flip-alpaca-bot: alpaca-py v0.43+ has a known issue where the `after=`
         parameter on `GetOrdersRequest` raises a TypeError due to string-vs-int
         comparison on submitted_at. We try with `after` first; on TypeError,
@@ -702,7 +743,7 @@ class BrokerClient:
             if o.status != OrderStatus.FILLED:
                 continue
             asset_class = getattr(o, "asset_class", None) or getattr(o, "assetClass", None)
-            if asset_class is not None and asset_class != AssetClass.US_OPTION:
+            if asset_class is not None and asset_class not in {AssetClass.US_OPTION, AssetClass.US_EQUITY}:
                 continue
             if cutoff is not None and getattr(o, "submitted_at", None) is not None:
                 submitted = o.submitted_at

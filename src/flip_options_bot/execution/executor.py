@@ -27,6 +27,7 @@ from ..journal import Journal, TradeEvent
 from ..risk import RiskEngine, RiskState
 from ..strategies.bull_put_credit import BullPutSpreadSignal
 from ..strategies.long_call import LongCallSignal
+from ..strategies.long_equity import LongEquitySignal
 
 log = logging.getLogger("flip_options_bot.executor")
 
@@ -194,6 +195,83 @@ class Executor:
             client_order_id=coid,
             position_id=position_id,
         )
+
+    def submit_long_equity(self, signal: LongEquitySignal, equity: float, state: RiskState) -> ExecutionResult:
+        """Submit one bullish long-equity fallback signal with limit orders only."""
+        if signal.strategy_id != "long_equity":
+            return ExecutionResult(accepted=False, reason=f"unknown strategy {signal.strategy_id}")
+        notional = signal.limit_price * signal.qty
+        stop_risk = max(signal.limit_price - signal.stop_price, 0.0) * signal.qty
+        if notional > self.settings.long_equity_max_position_dollar:
+            return ExecutionResult(
+                accepted=False,
+                reason=f"long_equity_notional: {notional:.2f} > {self.settings.long_equity_max_position_dollar:.2f}",
+            )
+        decision = self.risk.evaluate_pre_trade_stock(
+            state, equity=equity, proposed_risk=stop_risk
+        )
+        if not decision.allowed:
+            log.info("risk denied long_equity %s: %s", signal.symbol, decision.reason)
+            return ExecutionResult(accepted=False, reason=decision.reason)
+        if self.settings.is_live() and not self._confirm_live(signal):
+            log.warning("live mode but confirm_live denied; aborting long_equity %s", signal.symbol)
+            return ExecutionResult(accepted=False, reason="live_confirm_denied")
+
+        position_id = Journal.new_position_id()
+        coid = f"long-equity-{uuid.uuid4()}"
+        try:
+            order = self.broker.submit_stock_buy(
+                symbol=signal.symbol,
+                qty=signal.qty,
+                limit_price=signal.limit_price,
+                client_order_id=coid,
+                position_id=position_id,
+            )
+        except Exception as e:
+            log.error("broker submit_stock_buy failed for %s: %s", signal.symbol, e)
+            return ExecutionResult(accepted=False, reason=f"broker_error: {e}")
+
+        event = TradeEvent(
+            event_id=coid,
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol=signal.symbol,
+            side="buy",
+            qty=signal.qty,
+            price=signal.limit_price,
+            position_id=position_id,
+            strategy_id=signal.strategy_id,
+            raw_broker_fill={
+                "order_id": str(order.id),
+                "status": str(order.status),
+                "submitted_at": str(order.submitted_at),
+                "stop_price": signal.stop_price,
+                "take_profit_price": signal.take_profit_price,
+                "notional": notional,
+                "stop_risk": stop_risk,
+            },
+        )
+        self.journal.append(event)
+        self.journal.set_bracket(
+            position_id=position_id,
+            tp_order_id=None,
+            sl_order_id=None,
+            tp_price=signal.take_profit_price,
+            sl_trigger_price=signal.stop_price,
+            sl_limit_price=round(signal.stop_price * 0.999, 2),
+        )
+        self.risk.record_open(
+            state,
+            symbol=signal.symbol,
+            debit=stop_risk,
+            event_id=coid,
+        )
+        log.info(
+            "submitted long_equity %s qty=%d coid=%s pos=%s entry=%.2f tp=%.2f stop=%.2f",
+            signal.symbol, signal.qty, coid, position_id,
+            signal.limit_price, signal.take_profit_price, signal.stop_price,
+        )
+        return ExecutionResult(accepted=True, client_order_id=coid, position_id=position_id)
 
     def submit_bull_put_spread(
         self,

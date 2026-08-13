@@ -147,7 +147,10 @@ class PositionMonitor:
                 else max(avg_entry, 0.0)
             )
 
-            snap = self.broker.get_option_snapshot(symbol) or {}
+            if strategy_id == "long_equity":
+                snap = self.broker.get_stock_quote(symbol) or {}
+            else:
+                snap = self.broker.get_option_snapshot(symbol) or {}
             bid = float(snap.get("bid") or 0.0) if isinstance(snap, dict) else 0.0
             ask = float(snap.get("ask") or 0.0) if isinstance(snap, dict) else 0.0
             if bid and ask:
@@ -166,9 +169,12 @@ class PositionMonitor:
                 self._update_peak(position_id, mark)
                 peak_mark = mark
 
-            decision = self._evaluate_position(
-                pos, qty, qty_closed, avg_entry, peak_mark, mark, state
-            )
+            if strategy_id == "long_equity":
+                decision = self._evaluate_long_equity_position(pos, qty, avg_entry, peak_mark, mark, state)
+            else:
+                decision = self._evaluate_position(
+                    pos, qty, qty_closed, avg_entry, peak_mark, mark, state
+                )
             if decision is None:
                 continue
             trigger, close_qty, limit_price = decision
@@ -195,6 +201,41 @@ class PositionMonitor:
             )
         return result
 
+    def _evaluate_long_equity_position(
+        self,
+        pos: dict,
+        qty: int,
+        avg_entry: float,
+        peak_mark: float,
+        mark: float,
+        state: RiskState,
+    ) -> tuple[str, int, float] | None:
+        """Long-share protection: full exits at stop, TP, trailing floor, or EOD."""
+        if mark <= 0 or avg_entry <= 0:
+            return None
+        stop_raw = pos.get("sl_trigger_price")
+        tp_raw = pos.get("tp_price")
+        stop_price = float(stop_raw) if stop_raw is not None else avg_entry * (1.0 - self.settings.long_equity_stop_loss_pct)
+        take_profit = float(tp_raw) if tp_raw is not None else avg_entry * (1.0 + self.settings.long_equity_take_profit_pct)
+
+        if mark <= stop_price:
+            return ("equity_sl", qty, round(max(mark, stop_price * 0.999), 2))
+        if mark >= take_profit:
+            return ("equity_tp", qty, round(mark, 2))
+
+        gain_pct = (peak_mark - avg_entry) / avg_entry
+        if gain_pct >= self.trailing_arm_pct:
+            exit_floor = max(peak_mark * self.trailing_retention, avg_entry * self.profit_floor_pct)
+            if mark <= exit_floor:
+                return ("equity_trailing_floor", qty, round(mark, 2))
+
+        now = now_utc()
+        if is_weekday(now):
+            minutes_left = minutes_to_close(now)
+            if 0 <= minutes_left <= self.eod_minutes:
+                return ("eod", qty, round(mark, 2))
+        return None
+
     def _evaluate_position(
         self,
         pos: dict,
@@ -204,6 +245,7 @@ class PositionMonitor:
         peak_mark: float,
         mark: float,
         state: RiskState,
+        value_multiplier: int = 100,
     ) -> tuple[str, int, float] | None:
         """Decide what (if anything) to close. Returns (trigger, qty_to_close, limit_price) or None.
 
@@ -227,7 +269,7 @@ class PositionMonitor:
         # === 2. tp_partial — first time we hit +50%, sell half IF min profit $ ===
         # Compute the dollar profit if we exited at mark:
         # P&L per contract = (mark - avg_entry) * 100. For qty contracts:
-        potential_profit_dollar = (mark - avg_entry) * 100 * qty
+        potential_profit_dollar = (mark - avg_entry) * value_multiplier * qty
 
         if (
             mark >= avg_entry * self.tp_multiplier

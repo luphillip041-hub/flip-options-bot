@@ -114,6 +114,19 @@ class Settings:
     long_call_min_conviction: float = 0.45
     long_call_directional_lookback_minutes: int = 20
 
+    # ===== Long Equity fallback =====
+    # Bullish long exposure when call premiums are too expensive or chains are
+    # too wide. Limit orders only; same paper/live gates as options.
+    long_equity_enabled: bool = False
+    long_equity_min_direction_move_pct: float = 0.0010
+    long_equity_max_vwap_extension_pct: float = 0.020
+    long_equity_min_short_momentum_pct: float = 0.0010
+    long_equity_min_conviction: float = 0.55
+    long_equity_directional_lookback_minutes: int = 20
+    long_equity_max_position_dollar: float = 500.0
+    long_equity_stop_loss_pct: float = 0.004
+    long_equity_take_profit_pct: float = 0.008
+
     diagonal_enabled: bool = False  # off until exit-logic revision ships
 
     # ===== Bull Put Credit Spread (BPCS) =====
@@ -236,6 +249,25 @@ class Settings:
             long_call_directional_lookback_minutes=_coerce_int(
                 merged, "FOB_LONG_CALL_DIRECTIONAL_LOOKBACK_MINUTES", 20
             ),
+            long_equity_enabled=_coerce_bool(merged, "FOB_LONG_EQUITY_ENABLED", False),
+            long_equity_min_direction_move_pct=_coerce_float(
+                merged, "FOB_LONG_EQUITY_MIN_DIRECTION_MOVE_PCT", 0.0010
+            ),
+            long_equity_max_vwap_extension_pct=_coerce_float(
+                merged, "FOB_LONG_EQUITY_MAX_VWAP_EXTENSION_PCT", 0.020
+            ),
+            long_equity_min_short_momentum_pct=_coerce_float(
+                merged, "FOB_LONG_EQUITY_MIN_SHORT_MOMENTUM_PCT", 0.0010
+            ),
+            long_equity_min_conviction=_coerce_float(merged, "FOB_LONG_EQUITY_MIN_CONVICTION", 0.55),
+            long_equity_directional_lookback_minutes=_coerce_int(
+                merged, "FOB_LONG_EQUITY_DIRECTIONAL_LOOKBACK_MINUTES", 20
+            ),
+            long_equity_max_position_dollar=_coerce_float(
+                merged, "FOB_LONG_EQUITY_MAX_POSITION_DOLLAR", 500.0
+            ),
+            long_equity_stop_loss_pct=_coerce_float(merged, "FOB_LONG_EQUITY_STOP_LOSS_PCT", 0.004),
+            long_equity_take_profit_pct=_coerce_float(merged, "FOB_LONG_EQUITY_TAKE_PROFIT_PCT", 0.008),
             diagonal_enabled=_coerce_bool(merged, "FOB_DIAGONAL_ENABLED", False),
             bpcs_enabled=_coerce_bool(merged, "FOB_BPCS_ENABLED", False),
             bpcs_target_dte=_coerce_int(merged, "FOB_BPCS_TARGET_DTE", 35),
