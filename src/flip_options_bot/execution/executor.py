@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from dataclasses import dataclass
@@ -487,7 +488,11 @@ class Executor:
                 except (json.JSONDecodeError, TypeError, ValueError):
                     raw_payload = {}
                 fill_price = abs(float(order.filled_avg_price or 0.0))
-                if fill_price <= 0 or raw_payload.get("fill_source") == "broker":
+                if (
+                    not math.isfinite(fill_price)
+                    or fill_price <= 0
+                    or raw_payload.get("fill_source") == "broker"
+                ):
                     continue
                 raw_payload.update(
                     {

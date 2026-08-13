@@ -475,6 +475,59 @@ def test_executor_rejects_duplicate_bpcs_underlying(tmp_path: Path):
     broker.submit_credit_spread.assert_not_called()
 
 
+def test_existing_iwm_bpcs_does_not_block_spy(tmp_path: Path):
+    settings = Settings(
+        phase="paper",
+        live_trade_enabled=False,
+        run_dir=tmp_path,
+        bpcs_max_loss_pct=5.0,
+        bpcs_max_loss_dollar=600.0,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.submit_credit_spread.return_value = MagicMock(
+        id="spy-spread", status="ACCEPTED", submitted_at="now"
+    )
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+    journal.append(
+        TradeEvent(
+            event_id="existing-iwm",
+            ts=journal.now_iso(),
+            kind="open_spread",
+            symbol="BPCS:IWM260918P00298000/IWM260918P00292000",
+            side="sell",
+            qty=1,
+            price=1.38,
+            position_id=journal.new_position_id(),
+            strategy_id="bull_put_credit_spread",
+        )
+    )
+    sig = BullPutSpreadSignal(
+        short_strike=500.0,
+        long_strike=495.0,
+        expiry="2026-09-18",
+        credit_estimate=1.50,
+        max_loss_per_contract=350.0,
+        max_gain_per_contract=150.0,
+        pop=0.70,
+        conviction=0.65,
+        short_strike_price_estimate=3.0,
+        long_strike_price_estimate=1.5,
+        short_put_symbol="SPY260918P00500000",
+        long_put_symbol="SPY260918P00495000",
+    )
+    result = executor.submit_bull_put_spread(
+        sig,
+        equity=20000.0,
+        state=risk.load_state(),
+        short_put_symbol=sig.short_put_symbol,
+        long_put_symbol=sig.long_put_symbol,
+    )
+    assert result.accepted is True
+    broker.submit_credit_spread.assert_called_once()
+
+
 def test_duplicate_gate_holds_until_bpcs_close_is_broker_filled(tmp_path: Path):
     settings = Settings(phase="paper", live_trade_enabled=False, run_dir=tmp_path)
     broker = MagicMock(spec=BrokerClient)
@@ -592,6 +645,47 @@ def test_reconcile_existing_bpcs_open_uses_actual_mleg_credit(tmp_path: Path):
     reconciled_position = journal.get_position_for_id(pid)
     assert reconciled_position is not None
     assert reconciled_position["qty_open"] == 1
+
+
+@pytest.mark.parametrize("invalid_fill", ["0", "nan", "inf", "-inf"])
+def test_reconcile_bpcs_invalid_fill_price_fails_closed(tmp_path: Path, invalid_fill: str):
+    settings = Settings(phase="paper", live_trade_enabled=False, run_dir=tmp_path)
+    broker = MagicMock(spec=BrokerClient)
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+    pid = journal.new_position_id()
+    coid = "bpcs-invalid-fill"
+    journal.append(
+        TradeEvent(
+            event_id=coid,
+            ts=journal.now_iso(),
+            kind="open_spread",
+            symbol="BPCS:IWM260918P00298000/IWM260918P00292000",
+            side="sell",
+            qty=1,
+            price=1.45,
+            position_id=pid,
+            strategy_id="bull_put_credit_spread",
+            raw_broker_fill={"short_leg": "IWM260918P00298000", "long_leg": "IWM260918P00292000"},
+        )
+    )
+    fill = MagicMock(
+        client_order_id=coid,
+        filled_avg_price=invalid_fill,
+        filled_qty="1",
+        filled_at="2026-08-13T14:01:22+00:00",
+        id="mleg-invalid",
+        status="FILLED",
+    )
+    broker.list_filled_orders.return_value = [fill]
+    assert executor.reconcile_fills() == 0
+    event = journal.get_event(coid)
+    assert event is not None
+    assert event["price"] == pytest.approx(1.45)
+    position = journal.get_position_for_id(pid)
+    assert position is not None
+    assert position["qty_open"] == 1
 
 
 def test_reconcile_bpcs_close_fill_closes_position_and_releases_risk_slot(tmp_path: Path):
