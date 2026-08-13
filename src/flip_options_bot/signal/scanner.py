@@ -39,6 +39,14 @@ from ..strategies.long_call import (
     pick_target_expiry,
     volatility_regime_ok,
 )
+from ..strategies.long_put import (
+    LongPutFilters,
+    LongPutSignal,
+    compute_conviction as compute_put_conviction,
+    make_filters_from_settings as make_put_filters,
+    passes_conviction as passes_put_conviction,
+    pick_target_expiry as pick_put_expiry,
+)
 from ..strategies.long_equity import (
     LongEquityFilters,
     LongEquitySignal,
@@ -53,7 +61,7 @@ log = logging.getLogger("flip_options_bot.scanner")
 @dataclass
 class ScanResult:
     funnel_row: FunnelRow
-    candidates: list[LongCallSignal | LongEquitySignal]
+    candidates: list[LongCallSignal | LongPutSignal | LongEquitySignal]
 
 
 @dataclass
@@ -76,12 +84,14 @@ class Scanner:
         filters = make_filters_from_settings(self.settings)
         row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
 
-        candidates: list[LongCallSignal | LongEquitySignal] = []
+        candidates: list[LongCallSignal | LongPutSignal | LongEquitySignal] = []
         now = datetime.now(timezone.utc)
 
         for symbol in watchlist:
             try:
-                signals: list[LongCallSignal | LongEquitySignal] = list(self._scan_symbol(symbol, filters, now))
+                signals: list[LongCallSignal | LongPutSignal | LongEquitySignal] = list(self._scan_symbol(symbol, filters, now))
+                if self.settings.long_put_enabled:
+                    signals.extend(self._scan_long_put_symbol(symbol, make_put_filters(self.settings), now))
                 if self.settings.long_equity_enabled and not signals:
                     signals.extend(self._scan_long_equity_symbol(symbol, make_equity_filters(self.settings), now))
             except Exception as e:
@@ -288,6 +298,99 @@ class Scanner:
         return signals
 
     # ===== Internals =====
+
+    def _scan_long_put_symbol(
+        self, symbol: str, filters: LongPutFilters, now: datetime
+    ) -> list[LongPutSignal]:
+        """Scan a single symbol for bearish long-put candidates."""
+        signals: list[LongPutSignal] = []
+        bars = self.broker.get_stock_bars_minute(
+            symbol, lookback_minutes=filters.directional_lookback_minutes + 30
+        )
+        if len(bars) < filters.directional_lookback_minutes:
+            return signals
+        direction_move, vwap_extension, short_momentum = self._compute_features(bars, filters)
+        if direction_move > -filters.min_direction_move_pct:
+            return signals
+        if short_momentum > -filters.min_short_momentum_pct:
+            return signals
+        if vwap_extension > filters.max_vwap_extension_pct:
+            return signals
+
+        expiry_gte = (now + timedelta(days=filters.min_dte)).strftime("%Y-%m-%d")
+        expiry_lte = (now + timedelta(days=filters.max_dte)).strftime("%Y-%m-%d")
+        contracts = self.broker.list_option_contracts(symbol, expiry_gte, expiry_lte, option_type="put")
+        if not contracts:
+            return signals
+        expiry_set = sorted({c["expiry"] for c in contracts})
+        expiry = pick_put_expiry(expiry_set, filters)
+        if expiry is None:
+            return signals
+        dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
+
+        eligible = [
+            c for c in contracts
+            if c["expiry"] == expiry and c["type"] == "put" and c["open_interest"] > 0
+        ]
+        if not eligible:
+            return signals
+
+        chain_spreads = []
+        for c in eligible[:20]:
+            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
+            if snap and snap.get("bid", 0) > 0 and snap.get("ask", 0) > 0:
+                mid = (snap["bid"] + snap["ask"]) / 2
+                chain_spreads.append((snap["ask"] - snap["bid"]) / max(mid, 0.01))
+        if not volatility_regime_ok(chain_spreads):
+            log.info(
+                "%s put chain skipped: vol regime wide (median spread=%.2f%%)",
+                symbol,
+                sorted(chain_spreads)[len(chain_spreads) // 2] * 100 if chain_spreads else 0,
+            )
+            return signals
+
+        spot_quote = self.broker.get_stock_quote(symbol)
+        if spot_quote is None:
+            return signals
+        spot = (spot_quote["bid"] + spot_quote["ask"]) / 2
+        eligible.sort(key=lambda c: abs(c["strike"] - spot))
+
+        for c in eligible:
+            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
+            if snap is None or "bid" not in snap or "ask" not in snap:
+                continue
+            bid = float(snap["bid"])
+            ask = float(snap["ask"])
+            if bid <= 0 or ask <= 0 or ask <= bid:
+                continue
+            mid = (bid + ask) / 2
+            spread = ask - bid
+            spread_pct = spread / max(mid, 0.01)
+            if spread_pct > 0.50:
+                continue
+            conviction = compute_put_conviction(
+                direction_move=direction_move,
+                vwap_extension=vwap_extension,
+                short_momentum=short_momentum,
+                spread_pct=spread_pct,
+                filters=filters,
+            )
+            if not passes_put_conviction(conviction, filters):
+                continue
+            entry_price = round(mid + 0.25 * spread, 2)
+            signals.append(LongPutSignal(
+                symbol=c["symbol"],
+                expiry=expiry,
+                strike=c["strike"],
+                qty=1,
+                limit_price=entry_price,
+                conviction=conviction,
+                dte=dte,
+                ts=now.isoformat(),
+            ))
+
+        signals.sort(key=lambda s: s.conviction, reverse=True)
+        return signals[:3]
 
     def _scan_long_equity_symbol(
         self, symbol: str, filters: LongEquityFilters, now: datetime

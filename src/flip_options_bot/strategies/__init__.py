@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..config import Settings
-from . import long_call, bull_put_credit, long_equity
+from . import long_call, bull_put_credit, long_equity, long_put
 
 
 @dataclass
@@ -40,6 +40,10 @@ def _is_long_equity_enabled(s: Settings) -> bool:
     return s.long_equity_enabled
 
 
+def _is_long_put_enabled(s: Settings) -> bool:
+    return s.long_put_enabled
+
+
 STRATEGIES: dict[str, StrategyDescriptor] = {
     "long_call": StrategyDescriptor(
         strategy_id="long_call",
@@ -49,6 +53,15 @@ STRATEGIES: dict[str, StrategyDescriptor] = {
         pick_expiry=long_call.pick_target_expiry,
         compute_conviction=long_call.compute_conviction,
         passes_conviction=long_call.passes_conviction,
+    ),
+    "long_put": StrategyDescriptor(
+        strategy_id="long_put",
+        is_enabled=_is_long_put_enabled,
+        make_filters=long_put.make_filters_from_settings,
+        passes_dte=long_put.passes_dte_window,
+        pick_expiry=long_put.pick_target_expiry,
+        compute_conviction=long_put.compute_conviction,
+        passes_conviction=long_put.passes_conviction,
     ),
     "long_equity": StrategyDescriptor(
         strategy_id="long_equity",

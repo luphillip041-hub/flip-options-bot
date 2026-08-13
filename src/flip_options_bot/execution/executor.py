@@ -27,6 +27,7 @@ from ..journal import Journal, TradeEvent
 from ..risk import RiskEngine, RiskState
 from ..strategies.bull_put_credit import BullPutSpreadSignal
 from ..strategies.long_call import LongCallSignal
+from ..strategies.long_put import LongPutSignal
 from ..strategies.long_equity import LongEquitySignal
 
 log = logging.getLogger("flip_options_bot.executor")
@@ -49,14 +50,14 @@ class Executor:
         self.journal = journal
         self.risk = risk
 
-    def submit_long_call(self, signal: LongCallSignal, equity: float, state: RiskState) -> ExecutionResult:
-        """Submit one LongCallSignal. Risk gate runs first.
+    def submit_long_option(self, signal: LongCallSignal | LongPutSignal, equity: float, state: RiskState) -> ExecutionResult:
+        """Submit one long directional option signal (call or put). Risk gate runs first.
 
         If `state.is_live()` is True and the executor has not been configured
         to confirm live trading, abort. (Double-gate lives in Settings.is_live()
         AND in `confirm_live` which is operator-supplied.)
         """
-        if signal.strategy_id != "long_call":
+        if signal.strategy_id not in {"long_call", "long_put"}:
             return ExecutionResult(accepted=False, reason=f"unknown strategy {signal.strategy_id}")
 
         # === Risk gate ===
@@ -195,6 +196,13 @@ class Executor:
             client_order_id=coid,
             position_id=position_id,
         )
+
+    def submit_long_call(self, signal: LongCallSignal, equity: float, state: RiskState) -> ExecutionResult:
+        """Backward-compatible wrapper for callers/tests that only know long_call."""
+        return self.submit_long_option(signal, equity=equity, state=state)
+
+    def submit_long_put(self, signal: LongPutSignal, equity: float, state: RiskState) -> ExecutionResult:
+        return self.submit_long_option(signal, equity=equity, state=state)
 
     def submit_long_equity(self, signal: LongEquitySignal, equity: float, state: RiskState) -> ExecutionResult:
         """Submit one bullish long-equity fallback signal with limit orders only."""

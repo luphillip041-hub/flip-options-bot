@@ -32,6 +32,7 @@ from .signal import FunnelRecorder
 from .signal.scanner import Scanner
 from .strategies import enabled_strategies
 from .strategies.long_call import LongCallSignal
+from .strategies.long_put import LongPutSignal
 from .strategies.long_equity import LongEquitySignal
 
 log = logging.getLogger("flip_options_bot.daemon")
@@ -152,6 +153,8 @@ def run_once(
         fresh_state = risk.load_state()
         if sig.strategy_id == "long_equity":
             exec_result = executor.submit_long_equity(cast(LongEquitySignal, sig), equity=equity, state=fresh_state)
+        elif sig.strategy_id == "long_put":
+            exec_result = executor.submit_long_put(cast(LongPutSignal, sig), equity=equity, state=fresh_state)
         else:
             exec_result = executor.submit_long_call(cast(LongCallSignal, sig), equity=equity, state=fresh_state)
         if exec_result.accepted:
