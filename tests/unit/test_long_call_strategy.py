@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from flip_options_bot.strategies.long_call import (
     LongCallFilters,
     compute_conviction,
@@ -11,26 +13,37 @@ from flip_options_bot.strategies.long_call import (
 )
 
 
-def test_passes_dte_window():
+def test_passes_dte_window_prefers_zero_but_allows_two_weeks():
     f = LongCallFilters(
-        min_dte=1, target_dte=5, max_dte=14,
+        min_dte=0, target_dte=0, max_dte=14,
         min_direction_move_pct=0.003, max_vwap_extension_pct=0.020,
         min_short_momentum_pct=0.001, min_conviction=0.45,
         directional_lookback_minutes=20,
     )
-    assert passes_dte_window(5, f) is True
-    assert passes_dte_window(0, f) is False  # too short
+    assert passes_dte_window(0, f) is True
+    assert passes_dte_window(14, f) is True
     assert passes_dte_window(15, f) is False  # too long
 
 
-def test_pick_target_expiry_closest_to_target():
+def test_pick_target_expiry_prefers_0dte_with_two_week_fallback():
     f = LongCallFilters(
-        min_dte=1, target_dte=5, max_dte=14,
+        min_dte=0, target_dte=0, max_dte=14,
         min_direction_move_pct=0.003, max_vwap_extension_pct=0.020,
         min_short_momentum_pct=0.001, min_conviction=0.45,
         directional_lookback_minutes=20,
     )
-    # Hard to test without mocking date. Skip a deep test; just check empty input.
+    today = datetime.now(timezone.utc).date()
+    expiries = [
+        (today + timedelta(days=14)).strftime("%Y-%m-%d"),
+        (today + timedelta(days=7)).strftime("%Y-%m-%d"),
+        today.strftime("%Y-%m-%d"),
+    ]
+    assert pick_target_expiry(expiries, f) == today.strftime("%Y-%m-%d")
+    fallback_expiries = [
+        (today + timedelta(days=14)).strftime("%Y-%m-%d"),
+        (today + timedelta(days=7)).strftime("%Y-%m-%d"),
+    ]
+    assert pick_target_expiry(fallback_expiries, f) == (today + timedelta(days=7)).strftime("%Y-%m-%d")
     assert pick_target_expiry([], f) is None
 
 
