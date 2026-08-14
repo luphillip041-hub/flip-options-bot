@@ -123,6 +123,9 @@ def run_once(
             "watchlist_count": len(watchlist),
             "reconciled": n_reconciled,
             "submitted_count": 0,
+            "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
+            "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
+            "yfinance_strict_gate": settings.yfinance_strict_gate,
         }
 
     # Step 2: scan
@@ -138,6 +141,9 @@ def run_once(
             "submitted_count": 0,
             "reconciled": n_reconciled,
             "dominant_skip_reason": "market_closed",
+            "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
+            "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
+            "yfinance_strict_gate": settings.yfinance_strict_gate,
         }
     if not is_entry_window():
         log.info("scan skipped: outside entry window (09:45-15:45 ET)")
@@ -149,6 +155,9 @@ def run_once(
             "submitted_count": 0,
             "reconciled": n_reconciled,
             "dominant_skip_reason": "outside_entry_window",
+            "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
+            "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
+            "yfinance_strict_gate": settings.yfinance_strict_gate,
         }
     result = scanner.scan(watchlist)
     log.info("scan %s: watchlist=%d candidates=%d skip=%s",
