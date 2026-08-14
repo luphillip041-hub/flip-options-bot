@@ -155,6 +155,17 @@ class Settings:
     long_option_max_spread_pct: float = 0.35
     long_option_convexity_weight: float = 0.15
 
+    # ===== Free yfinance 1DTE+ confirmation sidecar =====
+    # Yahoo/yfinance is not broker truth and is not historical OPRA. Use it only
+    # to enrich/rank 1DTE+ paper candidates with current/delayed chain fields.
+    yfinance_confirm_1dte_enabled: bool = False
+    yfinance_confirm_min_dte: int = 1
+    yfinance_strict_gate: bool = False
+    yfinance_min_volume: int = 50
+    yfinance_max_spread_pct: float = 0.35
+    yfinance_bidask_bonus: float = 0.03
+    yfinance_volume_bonus: float = 0.01
+
     # ===== Long Equity fallback =====
     # Bullish long exposure when call premiums are too expensive or chains are
     # too wide. Limit orders only; same paper/live gates as options.
@@ -326,6 +337,15 @@ class Settings:
             long_option_convexity_weight=_coerce_float(
                 merged, "FOB_LONG_OPTION_CONVEXITY_WEIGHT", 0.15
             ),
+            yfinance_confirm_1dte_enabled=_coerce_bool(
+                merged, "FOB_YFINANCE_CONFIRM_1DTE_ENABLED", False
+            ),
+            yfinance_confirm_min_dte=_coerce_int(merged, "FOB_YFINANCE_CONFIRM_MIN_DTE", 1),
+            yfinance_strict_gate=_coerce_bool(merged, "FOB_YFINANCE_STRICT_GATE", False),
+            yfinance_min_volume=_coerce_int(merged, "FOB_YFINANCE_MIN_VOLUME", 50),
+            yfinance_max_spread_pct=_coerce_float(merged, "FOB_YFINANCE_MAX_SPREAD_PCT", 0.35),
+            yfinance_bidask_bonus=_coerce_float(merged, "FOB_YFINANCE_BIDASK_BONUS", 0.03),
+            yfinance_volume_bonus=_coerce_float(merged, "FOB_YFINANCE_VOLUME_BONUS", 0.01),
             long_equity_enabled=_coerce_bool(merged, "FOB_LONG_EQUITY_ENABLED", False),
             long_equity_min_direction_move_pct=_coerce_float(
                 merged, "FOB_LONG_EQUITY_MIN_DIRECTION_MOVE_PCT", 0.0010

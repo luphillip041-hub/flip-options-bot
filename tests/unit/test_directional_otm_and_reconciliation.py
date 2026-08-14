@@ -8,6 +8,7 @@ from flip_options_bot.config import Settings
 from flip_options_bot.execution.executor import Executor
 from flip_options_bot.journal import Journal
 from flip_options_bot.risk import RiskEngine
+from flip_options_bot.data.yfinance_options import YFinanceOptionQuote
 from flip_options_bot.signal import FunnelRecorder
 from flip_options_bot.signal.scanner import Scanner
 from flip_options_bot.strategies.long_call import LongCallSignal
@@ -19,6 +20,21 @@ def _bars(start: float, step: float, n: int = 60):
         {"o": start + i * step, "h": start + i * step + 0.05, "l": start + i * step - 0.05, "c": start + i * step, "v": 1000}
         for i in range(n)
     ]
+
+
+class FakeYFinanceProvider:
+    def __init__(self, quote: YFinanceOptionQuote | None):
+        self.quote = quote
+        self.calls: list[tuple[str, str, str]] = []
+
+    def get_quote(self, underlying: str, expiry: str, contract_symbol: str):
+        self.calls.append((underlying, expiry, contract_symbol))
+        return self.quote
+
+
+class ExplodingYFinanceProvider:
+    def get_quote(self, underlying: str, expiry: str, contract_symbol: str):
+        raise AssertionError("yfinance should not be queried for 0DTE")
 
 
 def test_long_call_prefers_configured_otm_strike(tmp_path: Path):
@@ -305,6 +321,109 @@ def test_high_reward_mode_prefers_farther_otm_put(tmp_path: Path):
     assert isinstance(sig, LongPutSignal)
     assert sig.strike == 98.5
     assert "high_reward=True" in sig.notes
+
+
+def test_yfinance_1dte_bidask_confirmation_enriches_candidate(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_put_enabled=False,
+        long_equity_enabled=False,
+        min_dte=1,
+        target_dte=1,
+        max_dte=14,
+        yfinance_confirm_1dte_enabled=True,
+        yfinance_confirm_min_dte=1,
+        yfinance_bidask_bonus=0.03,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    expiry = (datetime.now(timezone.utc).date() + timedelta(days=1)).strftime("%Y-%m-%d")
+    contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    broker.list_option_contracts.return_value = contracts
+    broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.20}
+    provider = FakeYFinanceProvider(YFinanceOptionQuote(
+        contract_symbol="SPY260815C00103500",
+        bid=1.05,
+        ask=1.12,
+        last_price=1.08,
+        volume=250,
+        open_interest=900,
+        implied_volatility=0.42,
+    ))
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(["SPY"])
+
+    assert result.candidates
+    sig = result.candidates[0]
+    assert isinstance(sig, LongCallSignal)
+    assert provider.calls == [("SPY", expiry, "SPY260815C00103500")]
+    assert "yf_quote=bid_ask" in sig.notes
+    assert "yf_confirm=bidask_tight" in sig.notes
+    assert "yf_vol=250" in sig.notes
+    assert sig.conviction > 0.45
+
+
+def test_yfinance_confirmation_not_queried_for_0dte(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_put_enabled=False,
+        long_equity_enabled=False,
+        min_dte=0,
+        target_dte=0,
+        max_dte=0,
+        yfinance_confirm_1dte_enabled=True,
+        yfinance_confirm_min_dte=1,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    expiry = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    contracts = [{"symbol": "SPY260814C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    broker.list_option_contracts.return_value = contracts
+    broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
+
+    result = Scanner(
+        settings,
+        broker,
+        FunnelRecorder(tmp_path),
+        yfinance_provider=ExplodingYFinanceProvider(),
+    ).scan(["SPY"])
+
+    assert result.candidates
+    assert "yf_" not in result.candidates[0].notes
+
+
+def test_yfinance_strict_gate_rejects_wide_1dte_quote(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_put_enabled=False,
+        long_equity_enabled=False,
+        min_dte=1,
+        target_dte=1,
+        max_dte=14,
+        yfinance_confirm_1dte_enabled=True,
+        yfinance_confirm_min_dte=1,
+        yfinance_strict_gate=True,
+        yfinance_max_spread_pct=0.35,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    expiry = (datetime.now(timezone.utc).date() + timedelta(days=1)).strftime("%Y-%m-%d")
+    contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    broker.list_option_contracts.return_value = contracts
+    broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
+    provider = FakeYFinanceProvider(YFinanceOptionQuote(
+        contract_symbol="SPY260815C00103500",
+        bid=0.50,
+        ask=1.50,
+        volume=500,
+    ))
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(["SPY"])
+
+    assert result.candidates == []
 
 
 def test_directional_executor_blocks_same_underlying_stack(tmp_path: Path):

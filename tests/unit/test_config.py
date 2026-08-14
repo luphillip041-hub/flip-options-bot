@@ -19,6 +19,8 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
         "FOB_PER_TRADE_RISK_PCT",
         "FOB_LONG_OPTION_HIGH_REWARD_MODE",
         "FOB_LONG_OPTION_OTM_LADDER_PCT",
+        "FOB_YFINANCE_CONFIRM_1DTE_ENABLED",
+        "FOB_YFINANCE_STRICT_GATE",
     ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -103,6 +105,27 @@ def test_high_reward_directional_env(monkeypatch, tmp_path: Path):
     assert settings.long_option_min_premium == 0.20
     assert settings.long_option_max_spread_pct == 0.30
     assert settings.long_option_convexity_weight == 0.25
+
+
+def test_yfinance_confirmation_env(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FOB_YFINANCE_CONFIRM_1DTE_ENABLED", "true")
+    monkeypatch.setenv("FOB_YFINANCE_CONFIRM_MIN_DTE", "2")
+    monkeypatch.setenv("FOB_YFINANCE_STRICT_GATE", "true")
+    monkeypatch.setenv("FOB_YFINANCE_MIN_VOLUME", "125")
+    monkeypatch.setenv("FOB_YFINANCE_MAX_SPREAD_PCT", "0.25")
+    monkeypatch.setenv("FOB_YFINANCE_BIDASK_BONUS", "0.04")
+    monkeypatch.setenv("FOB_YFINANCE_VOLUME_BONUS", "0.015")
+
+    settings = Settings.from_env()
+
+    assert settings.yfinance_confirm_1dte_enabled is True
+    assert settings.yfinance_confirm_min_dte == 2
+    assert settings.yfinance_strict_gate is True
+    assert settings.yfinance_min_volume == 125
+    assert settings.yfinance_max_spread_pct == 0.25
+    assert settings.yfinance_bidask_bonus == 0.04
+    assert settings.yfinance_volume_bonus == 0.015
 
 
 def test_has_paper_creds(monkeypatch, tmp_path: Path):

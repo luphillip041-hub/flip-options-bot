@@ -226,6 +226,9 @@ def run_once(
         "raw_signal_count": result.funnel_row.raw_signal_count,
         "ranked_candidate_count": len(ranked_candidates),
         "max_submissions_per_scan": max_submissions,
+        "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
+        "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
+        "yfinance_strict_gate": settings.yfinance_strict_gate,
         "submitted_count": submitted,
         "reconciled": n_reconciled,
         "denied": reasons[:5],
@@ -281,6 +284,10 @@ def main() -> int:
                  settings.long_option_high_reward_mode,
                  settings.long_option_otm_ladder_pct,
                  settings.max_contract_dollar)
+        log.info("  yfinance_1dte_confirm=%s min_dte=%s strict=%s",
+                 settings.yfinance_confirm_1dte_enabled,
+                 settings.yfinance_confirm_min_dte,
+                 settings.yfinance_strict_gate)
         log.info("  strategies enabled: %s",
                  [s.strategy_id for s in enabled_strategies(settings)])
         return 0

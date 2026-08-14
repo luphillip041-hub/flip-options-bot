@@ -12,13 +12,14 @@ For each eligible symbol:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol, cast
 
 from ..broker import BrokerClient
 from ..config import Settings
+from ..data.yfinance_options import YFinanceOptionChainProvider, YFinanceOptionQuote
 from ..signal import FunnelRecorder, FunnelRow
 from ..strategies.bull_put_credit import (
     BPCSFilters,
@@ -56,6 +57,12 @@ from ..strategies.long_equity import (
 log = logging.getLogger("flip_options_bot.scanner")
 
 
+class YFinanceProvider(Protocol):
+    def get_quote(
+        self, underlying: str, expiry: str, contract_symbol: str
+    ) -> YFinanceOptionQuote | None: ...
+
+
 @dataclass
 class ScanResult:
     funnel_row: FunnelRow
@@ -71,10 +78,17 @@ class BPCSScanResult:
 class Scanner:
     """One scan cycle. Stateless. No broker state mutation."""
 
-    def __init__(self, settings: Settings, broker: BrokerClient, funnel: FunnelRecorder):
+    def __init__(
+        self,
+        settings: Settings,
+        broker: BrokerClient,
+        funnel: FunnelRecorder,
+        yfinance_provider: YFinanceProvider | None = None,
+    ):
         self.settings = settings
         self.broker = broker
         self.funnel = funnel
+        self._yfinance_provider: YFinanceProvider | None = yfinance_provider
 
     def scan(self, watchlist: list[str], target_dte: int | None = None) -> ScanResult:
         """Run one scan over the watchlist. Emits a FunnelRow."""
@@ -383,7 +397,7 @@ class Scanner:
                     continue
                 if entry_price < self._min_long_option_premium():
                     continue
-                signals.append(LongPutSignal(
+                signal = LongPutSignal(
                     symbol=c["symbol"],
                     expiry=expiry,
                     strike=c["strike"],
@@ -393,7 +407,10 @@ class Scanner:
                     dte=dte,
                     notes=f"otm_pct={otm_pct:.4f};high_reward={self.settings.long_option_high_reward_mode}",
                     ts=now.isoformat(),
-                ))
+                )
+                enriched = self._enrich_yfinance_1dte(signal, symbol)
+                if enriched is not None:
+                    signals.append(cast(LongPutSignal, enriched))
 
         signals.sort(
             key=lambda s: self._directional_sort_key(s, spot, "put", filters),
@@ -560,7 +577,7 @@ class Scanner:
                 if entry_price < self._min_long_option_premium():
                     continue
 
-                signals.append(LongCallSignal(
+                signal = LongCallSignal(
                     symbol=c["symbol"],
                     expiry=expiry,
                     strike=c["strike"],
@@ -573,7 +590,10 @@ class Scanner:
                     strategy_id="long_call",
                     notes=f"otm_pct={otm_pct:.4f};high_reward={self.settings.long_option_high_reward_mode}",
                     ts=now.isoformat(),
-                ))
+                )
+                enriched = self._enrich_yfinance_1dte(signal, symbol)
+                if enriched is not None:
+                    signals.append(cast(LongCallSignal, enriched))
 
         # Keep top N by conviction, tie-breaking toward target DTE and OTM strike.
         signals.sort(
@@ -619,6 +639,77 @@ class Scanner:
             -abs(signal.dte - filters.target_dte),
             -abs(otm_pct - target_otm),
         )
+
+    def _enrich_yfinance_1dte(
+        self, signal: LongCallSignal | LongPutSignal, underlying: str
+    ) -> LongCallSignal | LongPutSignal | None:
+        """Use yfinance as a free 1DTE+ confirmation/ranking sidecar.
+
+        Alpaca remains broker/execution truth. yfinance can be stale/delayed and
+        often returns zero bid/ask, so it only adds small conviction bonuses and
+        metadata unless the explicit strict gate is enabled.
+        """
+        if not self.settings.yfinance_confirm_1dte_enabled:
+            return signal
+        if signal.dte < self.settings.yfinance_confirm_min_dte:
+            return signal
+
+        provider = self._get_yfinance_provider()
+        quote = provider.get_quote(underlying, signal.expiry, signal.symbol)
+        if quote is None:
+            return self._yfinance_missing(signal)
+
+        tags: list[str] = ["yf=seen"]
+        bonus = 0.0
+        if quote.has_bid_ask:
+            spread_pct = quote.spread_pct
+            tags.append("yf_quote=bid_ask")
+            if spread_pct is not None:
+                tags.append(f"yf_spread={spread_pct:.4f}")
+            if spread_pct is not None and spread_pct <= self.settings.yfinance_max_spread_pct:
+                bonus += self.settings.yfinance_bidask_bonus
+                tags.append("yf_confirm=bidask_tight")
+            elif self.settings.yfinance_strict_gate:
+                log.info("%s rejected by yfinance strict wide quote", signal.symbol)
+                return None
+        else:
+            tags.append("yf_quote=last_price_proxy_non_executable")
+            if quote.last_price is not None:
+                tags.append(f"yf_last={quote.last_price:.2f}")
+            # Last price is not a fillable quote. It can still provide a tiny
+            # research/ranking nudge for 1DTE+ if volume says the contract is active.
+            if (quote.volume or 0) >= self.settings.yfinance_min_volume:
+                bonus += self.settings.yfinance_volume_bonus
+                tags.append("yf_confirm=volume_only")
+            elif self.settings.yfinance_strict_gate:
+                log.info("%s rejected by yfinance strict missing bid/ask", signal.symbol)
+                return None
+
+        if quote.volume is not None:
+            tags.append(f"yf_vol={quote.volume}")
+        if quote.open_interest is not None:
+            tags.append(f"yf_oi={quote.open_interest}")
+        if quote.implied_volatility is not None:
+            tags.append(f"yf_iv={quote.implied_volatility:.4f}")
+
+        return replace(
+            signal,
+            conviction=min(1.0, signal.conviction + bonus),
+            notes=";".join([signal.notes, *tags]),
+        )
+
+    def _yfinance_missing(
+        self, signal: LongCallSignal | LongPutSignal
+    ) -> LongCallSignal | LongPutSignal | None:
+        if self.settings.yfinance_strict_gate:
+            log.info("%s rejected by yfinance strict missing contract", signal.symbol)
+            return None
+        return replace(signal, notes=f"{signal.notes};yf=missing")
+
+    def _get_yfinance_provider(self) -> YFinanceProvider:
+        if self._yfinance_provider is None:
+            self._yfinance_provider = YFinanceOptionChainProvider()
+        return self._yfinance_provider
 
     def _ordered_expiries(self, expiries: set[str], filters, now: datetime) -> list[str]:
         """Allowed expiries ordered by closeness to target DTE, then sooner.
