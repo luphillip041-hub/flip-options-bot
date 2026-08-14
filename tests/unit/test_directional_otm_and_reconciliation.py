@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from flip_options_bot.broker import BrokerClient
 from flip_options_bot.config import Settings
 from flip_options_bot.execution.executor import Executor
-from flip_options_bot.journal import Journal
+from flip_options_bot.journal import Journal, TradeEvent
 from flip_options_bot.risk import RiskEngine
 from flip_options_bot.data.yfinance_options import YFinanceOptionQuote
 from flip_options_bot.signal import FunnelRecorder
@@ -551,3 +551,61 @@ def test_reconcile_long_option_open_uses_actual_broker_fill(tmp_path: Path):
     assert pos is not None
     assert pos["avg_entry_price"] == 1.17
     assert pos["qty_open"] == 1
+
+
+def test_reconcile_long_option_close_attempt_canonicalizes_on_fill(tmp_path: Path):
+    settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
+    broker = MagicMock(spec=BrokerClient)
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+    position_id = Journal.new_position_id()
+    symbol = "SPY260813C00103000"
+    close_coid = "close-test-1"
+    journal.append(TradeEvent(
+        event_id="open-test-1",
+        ts="2026-08-13T14:00:00+00:00",
+        kind="open",
+        symbol=symbol,
+        side="buy",
+        qty=2,
+        price=1.20,
+        position_id=position_id,
+        strategy_id="long_call",
+    ))
+    journal.append(TradeEvent(
+        event_id=close_coid,
+        ts="2026-08-13T14:01:00+00:00",
+        kind="close_attempt",
+        symbol=symbol,
+        side="sell",
+        qty=2,
+        price=1.25,
+        position_id=position_id,
+        raw_broker_fill={"close_position_id": position_id},
+    ))
+    before = journal.get_position_for_id(position_id)
+    assert before is not None
+    assert before["state"] == "open"
+
+    fill = MagicMock()
+    fill.client_order_id = close_coid
+    fill.filled_avg_price = "1.31"
+    fill.filled_qty = "2"
+    fill.filled_at = "2026-08-13T14:02:00+00:00"
+    fill.id = "order-close-1"
+    fill.status = "FILLED"
+    fill.side = "sell"
+    fill.symbol = symbol
+    broker.list_filled_orders.return_value = [fill]
+
+    assert executor.reconcile_fills() == 1
+    event = journal.get_event(close_coid)
+    assert event is not None
+    assert event["kind"] == "close"
+    assert event["price"] == 1.31
+    assert event["realized_pnl"] == 22.0
+    pos = journal.get_position_for_id(position_id)
+    assert pos is not None
+    assert pos["state"] == "closed"
+    assert pos["qty_closed"] == 2

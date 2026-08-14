@@ -518,7 +518,7 @@ class Executor:
             if not coid:
                 continue
             existing = self.journal.get_event(coid)
-            if existing and existing.get("kind") in ("open", "close", "open_spread", "close_spread"):
+            if existing and existing.get("kind") in ("open", "close", "close_attempt", "open_spread", "close_spread"):
                 raw = existing.get("raw_broker_fill") or "{}"
                 try:
                     raw_payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
@@ -541,6 +541,8 @@ class Executor:
                     }
                 )
                 kind = str(existing["kind"])
+                if kind == "close_attempt":
+                    kind = "close"
                 realized_pnl = float(existing.get("realized_pnl") or 0.0)
                 strategy_id = str(existing.get("strategy_id") or "")
                 if kind == "close_spread":

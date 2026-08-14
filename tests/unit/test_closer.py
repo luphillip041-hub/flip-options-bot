@@ -3,7 +3,7 @@
 These tests use mocked broker + journal + risk so no live API calls
 are made. They verify:
 - flatten_position submits a SELL limit via the broker
-- the journal receives a close event with position_id + reason
+- the journal receives a non-mutating close_attempt with position_id + reason
 - flatten_all iterates all open positions
 - idempotency: a duplicate event_id is silently skipped
 """
@@ -73,13 +73,14 @@ def test_flatten_position_submits_sell(tmp_path: Path) -> None:
     assert res.client_order_id.startswith("close-")
     broker.submit_close_sell.assert_called_once()
     assert journal.has_event(res.client_order_id)
-    # The flatten_position write places a placeholder close event with the
-    # same event_id that reconcile_fills will later overwrite via upsert().
-    # The position_state row should now reflect qty_closed=1 and state=closed.
+    event = journal.get_event(res.client_order_id)
+    assert event is not None
+    assert event["kind"] == "close_attempt"
+    # The close_attempt must not mark the position closed before broker fill.
     pos = journal.get_all_positions()[0]
     assert pos["position_id"] == pos_id
-    assert pos["qty_closed"] == 1
-    assert pos["state"] == "closed"
+    assert pos["qty_closed"] == 0
+    assert pos["state"] == "open"
 
 
 def test_flatten_position_zero_qty_rejected(tmp_path: Path) -> None:
@@ -159,9 +160,9 @@ def test_journal_idempotent_on_close_event_id(tmp_path: Path) -> None:
         position_id=pos_id,
         limit_price=2.75,
     )
-    # The placeholder close is in the table. Now simulate reconcile_fills
-    # writing the canonical close via upsert() — this overwrites price +
-    # realized_pnl with the real fill values from the broker.
+    # The close_attempt is in the table. Now simulate reconcile_fills writing
+    # the canonical close via upsert() — this overwrites price + realized_pnl
+    # with the real fill values from the broker and only then closes the row.
     canonical = TradeEvent(
         event_id=res.client_order_id,
         ts=Journal.now_iso(),
@@ -175,7 +176,7 @@ def test_journal_idempotent_on_close_event_id(tmp_path: Path) -> None:
         strategy_id="long_call",
     )
     created = journal.upsert(canonical)
-    assert created is False  # row already existed, updated not created
+    assert created is False  # close_attempt row already existed and was canonicalized
 
     pos = next(p for p in journal.get_all_positions() if p["position_id"] == pos_id)
     assert pos["state"] == "closed"

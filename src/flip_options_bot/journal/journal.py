@@ -227,6 +227,7 @@ class Journal:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_id) DO UPDATE SET
                     ts = excluded.ts,
+                    kind = excluded.kind,
                     symbol = excluded.symbol,
                     side = excluded.side,
                     qty = excluded.qty,

@@ -68,10 +68,10 @@ class Closer:
         event (with the real fill price from the broker), it can update
         the position_state row.
 
-        This method intentionally does NOT write a `close` TradeEvent to
-        the journal directly — that would race with `reconcile_fills()`
-        which is the canonical source. If both wrote the same event_id,
-        INSERT OR IGNORE would lose the broker's actual fill price.
+        This method intentionally does NOT write a canonical `close` TradeEvent
+        to the journal directly — that would mark the position closed before
+        the broker fill exists. It writes `close_attempt`, which preserves the
+        client_order_id/position_id link without mutating position_state.
 
         The `reconcile_fills()` flow:
           1. broker.list_filled_orders returns the closed sell
@@ -95,13 +95,13 @@ class Closer:
             return CloseResult(accepted=False, reason=f"broker_error: {e}")
 
         # Record the close intent (not the canonical close) so the journal
-        # knows a close was attempted. This event has the same event_id
-        # that reconcile_fills() will use, so the canonical event will
-        # overwrite this row's price + realized_pnl fields.
+        # knows a close was attempted. `close_attempt` does not update
+        # position_state; reconcile_fills() later upserts a canonical `close`
+        # with the actual broker fill price and realized P&L.
         event = TradeEvent(
             event_id=coid,
             ts=Journal.now_iso(),
-            kind="close",
+            kind="close_attempt",
             symbol=symbol,
             side="sell",
             qty=qty,
@@ -117,9 +117,6 @@ class Closer:
                 "close_position_id": position_id,
             },
         )
-        # Idempotent: first call writes the row, the canonical reconcile
-        # event later overwrites price/realized_pnl via INSERT OR REPLACE
-        # in the executor's reconcile_fills (or via a future migration).
         self.journal.append(event)
 
         log.info(
