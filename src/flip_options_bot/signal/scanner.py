@@ -36,7 +36,6 @@ from ..strategies.long_call import (
     compute_conviction,
     make_filters_from_settings,
     passes_conviction,
-    pick_target_expiry,
     volatility_regime_ok,
 )
 from ..strategies.long_put import (
@@ -45,7 +44,6 @@ from ..strategies.long_put import (
     compute_conviction as compute_put_conviction,
     make_filters_from_settings as make_put_filters,
     passes_conviction as passes_put_conviction,
-    pick_target_expiry as pick_put_expiry,
 )
 from ..strategies.long_equity import (
     LongEquityFilters,
@@ -322,76 +320,76 @@ class Scanner:
         contracts = self.broker.list_option_contracts(symbol, expiry_gte, expiry_lte, option_type="put")
         if not contracts:
             return signals
-        expiry_set = sorted({c["expiry"] for c in contracts})
-        expiry = pick_put_expiry(expiry_set, filters)
-        if expiry is None:
-            return signals
-        dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
-
-        eligible = [
-            c for c in contracts
-            if c["expiry"] == expiry and c["type"] == "put" and c["open_interest"] > 0
-        ]
-        if not eligible:
-            return signals
-
-        chain_spreads = []
-        for c in eligible[:20]:
-            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
-            if snap and snap.get("bid", 0) > 0 and snap.get("ask", 0) > 0:
-                mid = (snap["bid"] + snap["ask"]) / 2
-                chain_spreads.append((snap["ask"] - snap["bid"]) / max(mid, 0.01))
-        if not volatility_regime_ok(chain_spreads):
-            log.info(
-                "%s put chain skipped: vol regime wide (median spread=%.2f%%)",
-                symbol,
-                sorted(chain_spreads)[len(chain_spreads) // 2] * 100 if chain_spreads else 0,
-            )
-            return signals
 
         spot_quote = self.broker.get_stock_quote(symbol)
         if spot_quote is None:
             return signals
         spot = (spot_quote["bid"] + spot_quote["ask"]) / 2
-        target_strike = spot * (1.0 - filters.target_otm_pct)
-        eligible.sort(key=lambda c: abs(c["strike"] - target_strike))
 
-        for c in eligible:
-            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
-            if snap is None or "bid" not in snap or "ask" not in snap:
+        for expiry in self._ordered_expiries({c["expiry"] for c in contracts}, filters, now):
+            dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
+            target_strike = spot * (1.0 - filters.target_otm_pct)
+            eligible = [
+                c for c in contracts
+                if c["expiry"] == expiry and c["type"] == "put" and c["open_interest"] > 0
+            ]
+            if not eligible:
                 continue
-            bid = float(snap["bid"])
-            ask = float(snap["ask"])
-            if bid <= 0 or ask <= 0 or ask <= bid:
+            eligible.sort(key=lambda c: abs(c["strike"] - target_strike))
+
+            chain_spreads = []
+            for c in eligible[:20]:
+                snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
+                if snap and snap.get("bid", 0) > 0 and snap.get("ask", 0) > 0:
+                    mid = (snap["bid"] + snap["ask"]) / 2
+                    chain_spreads.append((snap["ask"] - snap["bid"]) / max(mid, 0.01))
+            if not volatility_regime_ok(chain_spreads):
+                log.info(
+                    "%s %s put chain skipped: vol regime wide (median spread=%.2f%%)",
+                    symbol,
+                    expiry,
+                    sorted(chain_spreads)[len(chain_spreads) // 2] * 100 if chain_spreads else 0,
+                )
                 continue
-            mid = (bid + ask) / 2
-            spread = ask - bid
-            spread_pct = spread / max(mid, 0.01)
-            if spread_pct > 0.50:
-                continue
-            conviction = compute_put_conviction(
-                direction_move=direction_move,
-                vwap_extension=vwap_extension,
-                short_momentum=short_momentum,
-                spread_pct=spread_pct,
-                filters=filters,
-            )
-            if not passes_put_conviction(conviction, filters):
-                continue
-            entry_price = round(mid + 0.25 * spread, 2)
-            signals.append(LongPutSignal(
-                symbol=c["symbol"],
-                expiry=expiry,
-                strike=c["strike"],
-                qty=1,
-                limit_price=entry_price,
-                conviction=conviction,
-                dte=dte,
-                ts=now.isoformat(),
-            ))
+
+            for c in eligible:
+                snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
+                if snap is None or "bid" not in snap or "ask" not in snap:
+                    continue
+                bid = float(snap["bid"])
+                ask = float(snap["ask"])
+                if bid <= 0 or ask <= 0 or ask <= bid:
+                    continue
+                mid = (bid + ask) / 2
+                spread = ask - bid
+                spread_pct = spread / max(mid, 0.01)
+                if spread_pct > 0.50:
+                    continue
+                conviction = compute_put_conviction(
+                    direction_move=direction_move,
+                    vwap_extension=vwap_extension,
+                    short_momentum=short_momentum,
+                    spread_pct=spread_pct,
+                    filters=filters,
+                )
+                if not passes_put_conviction(conviction, filters):
+                    continue
+                entry_price = round(mid + 0.25 * spread, 2)
+                if entry_price * 100 > self.settings.max_contract_dollar:
+                    continue
+                signals.append(LongPutSignal(
+                    symbol=c["symbol"],
+                    expiry=expiry,
+                    strike=c["strike"],
+                    qty=1,
+                    limit_price=entry_price,
+                    conviction=conviction,
+                    dte=dte,
+                    ts=now.isoformat(),
+                ))
 
         signals.sort(
-            key=lambda s: (s.conviction, -abs(s.strike - target_strike)),
+            key=lambda s: (s.conviction, -abs(s.dte - filters.target_dte), -abs(s.strike - spot * (1.0 - filters.target_otm_pct))),
             reverse=True,
         )
         return signals[:3]
@@ -481,104 +479,111 @@ class Scanner:
         if not contracts:
             return signals
 
-        # Pick expiry closest to target_dte
-        expiry_set = sorted({c["expiry"] for c in contracts})
-        expiry = pick_target_expiry(expiry_set, filters)
-        if expiry is None:
-            return signals
-
-        dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
-
-        # Filter contracts to the chosen expiry, calls
-        eligible = [
-            c for c in contracts
-            if c["expiry"] == expiry and c["type"] == "call"
-            and c["open_interest"] > 0
-        ]
-        if not eligible:
-            return signals
-
-        # Volatility regime filter — sample spreads across the eligible
-        # chain. If median spread > 20%, market makers are pulling quotes
-        # (vol crash). Don't buy premium in that regime.
-        chain_spreads = []
-        for c in eligible[:20]:  # sample up to 20 contracts for the regime check
-            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
-            if snap and snap.get("bid", 0) > 0 and snap.get("ask", 0) > 0:
-                mid = (snap["bid"] + snap["ask"]) / 2
-                spread_pct = (snap["ask"] - snap["bid"]) / max(mid, 0.01)
-                chain_spreads.append(spread_pct)
-        if not volatility_regime_ok(chain_spreads):
-            log.info(
-                "%s chain skipped: vol regime wide (median spread=%.2f%%)",
-                symbol,
-                sorted(chain_spreads)[len(chain_spreads) // 2] * 100 if chain_spreads else 0,
-            )
-            return signals
-
-        # Pull snapshots for each contract
+        # Pull stock quote once, then evaluate every allowed expiry in target order.
+        # If 0DTE is ugly/wide/missing, keep walking forward up to max_dte.
         spot_quote = self.broker.get_stock_quote(symbol)
         if spot_quote is None:
             return signals
         spot = (spot_quote["bid"] + spot_quote["ask"]) / 2
-        target_strike = spot * (1.0 + filters.target_otm_pct)
-        eligible.sort(key=lambda c: abs(c["strike"] - target_strike))
 
-        for c in eligible:
-            snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
-            if snap is None or "bid" not in snap or "ask" not in snap:
+        for expiry in self._ordered_expiries({c["expiry"] for c in contracts}, filters, now):
+            dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
+            target_strike = spot * (1.0 + filters.target_otm_pct)
+            eligible = [
+                c for c in contracts
+                if c["expiry"] == expiry and c["type"] == "call"
+                and c["open_interest"] > 0
+            ]
+            if not eligible:
                 continue
-            bid = float(snap["bid"])
-            ask = float(snap["ask"])
-            if bid <= 0 or ask <= 0 or ask <= bid:
-                continue  # invalid quote; skip
-            mid = (bid + ask) / 2
-            spread = ask - bid
-            spread_pct = spread / max(mid, 0.01)
+            eligible.sort(key=lambda c: abs(c["strike"] - target_strike))
 
-            # Skip contracts with absurdly wide spreads (>50%) — never trade
-            # a wide-spread option, the slippage alone will eat our gains.
-            if spread_pct > 0.50:
+            # Volatility regime filter — sample spreads around the target OTM area.
+            chain_spreads = []
+            for c in eligible[:20]:
+                snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
+                if snap and snap.get("bid", 0) > 0 and snap.get("ask", 0) > 0:
+                    mid = (snap["bid"] + snap["ask"]) / 2
+                    spread_pct = (snap["ask"] - snap["bid"]) / max(mid, 0.01)
+                    chain_spreads.append(spread_pct)
+            if not volatility_regime_ok(chain_spreads):
+                log.info(
+                    "%s %s call chain skipped: vol regime wide (median spread=%.2f%%)",
+                    symbol,
+                    expiry,
+                    sorted(chain_spreads)[len(chain_spreads) // 2] * 100 if chain_spreads else 0,
+                )
                 continue
 
-            conviction = compute_conviction(
-                direction_move=direction_move,
-                vwap_extension=vwap_extension,
-                short_momentum=short_momentum,
-                spread_pct=spread_pct,
-                filters=filters,
-            )
-            if not passes_conviction(conviction, filters):
-                continue
+            for c in eligible:
+                snap = self.broker.get_option_snapshot(c["symbol"], expiry=expiry)
+                if snap is None or "bid" not in snap or "ask" not in snap:
+                    continue
+                bid = float(snap["bid"])
+                ask = float(snap["ask"])
+                if bid <= 0 or ask <= 0 or ask <= bid:
+                    continue  # invalid quote; skip
+                mid = (bid + ask) / 2
+                spread = ask - bid
+                spread_pct = spread / max(mid, 0.01)
 
-            # Gain-protection entry: pay 25% of the spread above mid, so we
-            # sit closer to the bid (the bid IS our floor if we have to exit
-            # immediately). For a $1.00 mid / $0.20 spread, that's $1.05.
-            # This beats paying mid*1.02 ($1.02) AND pays less than asking
-            # full ask ($1.10). The trade fills when the bid lifts to our
-            # limit; in paper, it usually fills within seconds.
-            entry_price = round(mid + 0.25 * spread, 2)
+                # Skip contracts with absurdly wide spreads (>50%) — never trade
+                # a wide-spread option, the slippage alone will eat our gains.
+                if spread_pct > 0.50:
+                    continue
 
-            signals.append(LongCallSignal(
-                symbol=c["symbol"],
-                expiry=expiry,
-                strike=c["strike"],
-                side="buy",
-                option_type="call",
-                qty=1,
-                limit_price=entry_price,
-                conviction=conviction,
-                dte=dte,
-                strategy_id="long_call",
-                ts=now.isoformat(),
-            ))
+                conviction = compute_conviction(
+                    direction_move=direction_move,
+                    vwap_extension=vwap_extension,
+                    short_momentum=short_momentum,
+                    spread_pct=spread_pct,
+                    filters=filters,
+                )
+                if not passes_conviction(conviction, filters):
+                    continue
 
-        # Keep top N by conviction, tie-breaking toward the configured OTM target.
+                # Gain-protection entry: pay 25% of the spread above mid.
+                entry_price = round(mid + 0.25 * spread, 2)
+                if entry_price * 100 > self.settings.max_contract_dollar:
+                    continue
+
+                signals.append(LongCallSignal(
+                    symbol=c["symbol"],
+                    expiry=expiry,
+                    strike=c["strike"],
+                    side="buy",
+                    option_type="call",
+                    qty=1,
+                    limit_price=entry_price,
+                    conviction=conviction,
+                    dte=dte,
+                    strategy_id="long_call",
+                    ts=now.isoformat(),
+                ))
+
+        # Keep top N by conviction, tie-breaking toward target DTE and OTM strike.
         signals.sort(
-            key=lambda s: (s.conviction, -abs(s.strike - target_strike)),
+            key=lambda s: (s.conviction, -abs(s.dte - filters.target_dte), -abs(s.strike - spot * (1.0 + filters.target_otm_pct))),
             reverse=True,
         )
         return signals[:3]
+
+    def _ordered_expiries(self, expiries: set[str], filters, now: datetime) -> list[str]:
+        """Allowed expiries ordered by closeness to target DTE, then sooner.
+
+        This lets 0DTE win when valid, while allowing 1-14 DTE fallback when
+        same-day chains are missing, too wide, or otherwise fail closed.
+        """
+        ranked: list[tuple[int, int, str]] = []
+        for exp_str in expiries:
+            try:
+                dte = (datetime.strptime(exp_str, "%Y-%m-%d").date() - now.date()).days
+            except ValueError:
+                continue
+            if filters.min_dte <= dte <= filters.max_dte:
+                ranked.append((abs(dte - filters.target_dte), dte, exp_str))
+        ranked.sort()
+        return [exp for _, _, exp in ranked]
 
     def _compute_features(
         self, bars: list[dict], filters

@@ -88,6 +88,116 @@ def test_long_put_prefers_configured_otm_strike(tmp_path: Path):
     assert sig.dte == 0
 
 
+def test_long_call_falls_forward_when_0dte_chain_is_too_wide(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_put_enabled=False,
+        long_equity_enabled=False,
+        min_dte=0,
+        target_dte=0,
+        max_dte=14,
+        long_call_target_otm_pct=0.01,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    today = datetime.now(timezone.utc).date()
+    exp0 = today.strftime("%Y-%m-%d")
+    exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    contracts = [
+        {"symbol": "SPY0_C_103", "expiry": exp0, "type": "call", "strike": 103.0, "open_interest": 100},
+        {"symbol": "SPY7_C_103", "expiry": exp7, "type": "call", "strike": 103.0, "open_interest": 100},
+    ]
+    broker.list_option_contracts.return_value = contracts
+    snapshots = {
+        "SPY0_C_103": {"bid": 0.10, "ask": 0.30},  # median spread too wide => expiry skipped
+        "SPY7_C_103": {"bid": 1.00, "ask": 1.06},
+    }
+    broker.get_option_snapshot.side_effect = lambda sym, expiry=None: snapshots.get(sym)
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path)).scan(["SPY"])
+
+    assert result.candidates
+    sig = result.candidates[0]
+    assert isinstance(sig, LongCallSignal)
+    assert sig.expiry == exp7
+    assert sig.dte == 7
+
+
+def test_long_put_falls_forward_when_0dte_chain_is_too_wide(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_put_enabled=True,
+        long_equity_enabled=False,
+        long_call_enabled=False,
+        min_dte=0,
+        target_dte=0,
+        max_dte=14,
+        long_put_target_otm_pct=0.01,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(104.0, -0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    today = datetime.now(timezone.utc).date()
+    exp0 = today.strftime("%Y-%m-%d")
+    exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    contracts = [
+        {"symbol": "SPY0_P_101", "expiry": exp0, "type": "put", "strike": 101.0, "open_interest": 100},
+        {"symbol": "SPY7_P_101", "expiry": exp7, "type": "put", "strike": 101.0, "open_interest": 100},
+    ]
+    broker.list_option_contracts.return_value = contracts
+    snapshots = {
+        "SPY0_P_101": {"bid": 0.10, "ask": 0.30},
+        "SPY7_P_101": {"bid": 1.00, "ask": 1.06},
+    }
+    broker.get_option_snapshot.side_effect = lambda sym, expiry=None: snapshots.get(sym)
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path)).scan(["SPY"])
+
+    assert result.candidates
+    sig = result.candidates[0]
+    assert isinstance(sig, LongPutSignal)
+    assert sig.expiry == exp7
+    assert sig.dte == 7
+
+
+def test_long_call_falls_forward_when_0dte_contract_is_over_cap(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_put_enabled=False,
+        long_equity_enabled=False,
+        min_dte=0,
+        target_dte=0,
+        max_dte=14,
+        max_contract_dollar=500,
+        long_call_target_otm_pct=0.01,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    today = datetime.now(timezone.utc).date()
+    exp0 = today.strftime("%Y-%m-%d")
+    exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    contracts = [
+        {"symbol": "SPY0_C_103", "expiry": exp0, "type": "call", "strike": 103.0, "open_interest": 100},
+        {"symbol": "SPY7_C_103", "expiry": exp7, "type": "call", "strike": 103.0, "open_interest": 100},
+    ]
+    broker.list_option_contracts.return_value = contracts
+    snapshots = {
+        "SPY0_C_103": {"bid": 6.00, "ask": 6.10},  # $607.50/contract, over cap
+        "SPY7_C_103": {"bid": 1.00, "ask": 1.06},
+    }
+    broker.get_option_snapshot.side_effect = lambda sym, expiry=None: snapshots.get(sym)
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path)).scan(["SPY"])
+
+    assert result.candidates
+    sig = result.candidates[0]
+    assert isinstance(sig, LongCallSignal)
+    assert sig.expiry == exp7
+    assert sig.limit_price == 1.04
+
+
 def test_directional_executor_blocks_same_underlying_stack(tmp_path: Path):
     settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
     broker = MagicMock(spec=BrokerClient)

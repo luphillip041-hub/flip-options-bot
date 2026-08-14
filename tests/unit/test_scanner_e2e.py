@@ -69,7 +69,7 @@ def _build_broker_mock() -> MagicMock:
         contracts[1]["symbol"]: {"bid": 0.30, "ask": 0.31},
         contracts[2]["symbol"]: {"bid": 0.15, "ask": 0.16},
     }
-    broker.get_option_snapshot = MagicMock(side_effect=lambda sym: snapshots.get(sym))
+    broker.get_option_snapshot = MagicMock(side_effect=lambda sym, expiry=None: snapshots.get(sym))
 
     return broker
 
@@ -114,7 +114,7 @@ def test_scanner_skips_with_wide_spreads(tmp_path: Path):
         f"SPY{expiry_yymmdd}C010150": {"bid": 0.20, "ask": 0.40},   # 67%
         f"SPY{expiry_yymmdd}C010200": {"bid": 0.05, "ask": 0.15},   # 100%
     }
-    broker.get_option_snapshot = MagicMock(side_effect=lambda sym: wide.get(sym))
+    broker.get_option_snapshot = MagicMock(side_effect=lambda sym, expiry=None: wide.get(sym))
 
     result = scanner.scan(["SPY"])
     print(f"  wide-spread scan: candidates={len(result.candidates)}, skip={result.funnel_row.dominant_skip_reason}")
