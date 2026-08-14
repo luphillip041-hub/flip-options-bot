@@ -154,6 +154,9 @@ class Settings:
     long_option_min_premium: float = 0.15
     long_option_max_spread_pct: float = 0.35
     long_option_convexity_weight: float = 0.15
+    # If one underlying realizes this much directional loss in the current ET
+    # session, stop opening new long calls/puts on that underlying for the day.
+    directional_underlying_loss_lockout_dollar: float = 50.0
 
     # ===== Free yfinance 1DTE+ confirmation sidecar =====
     # Yahoo/yfinance is not broker truth and is not historical OPRA. Use it only
@@ -242,7 +245,7 @@ class Settings:
         return bool(self.alpaca_live_key and self.alpaca_live_secret)
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         """Build from disk env file, with process env overriding."""
         file_env = _load_env_file()
         merged = {**file_env, **os.environ}
@@ -340,6 +343,9 @@ class Settings:
             ),
             long_option_convexity_weight=_coerce_float(
                 merged, "FOB_LONG_OPTION_CONVEXITY_WEIGHT", 0.15
+            ),
+            directional_underlying_loss_lockout_dollar=_coerce_float(
+                merged, "FOB_DIRECTIONAL_UNDERLYING_LOSS_LOCKOUT_DOLLAR", 50.0
             ),
             yfinance_confirm_1dte_enabled=_coerce_bool(
                 merged, "FOB_YFINANCE_CONFIRM_1DTE_ENABLED", False

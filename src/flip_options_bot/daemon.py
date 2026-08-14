@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 import threading
-import time
+from datetime import UTC
 from pathlib import Path
 from typing import cast
 
@@ -32,8 +32,8 @@ from .signal import FunnelRecorder
 from .signal.scanner import Scanner
 from .strategies import enabled_strategies
 from .strategies.long_call import LongCallSignal
-from .strategies.long_put import LongPutSignal
 from .strategies.long_equity import LongEquitySignal
+from .strategies.long_put import LongPutSignal
 
 log = logging.getLogger("flip_options_bot.daemon")
 
@@ -64,11 +64,11 @@ def setup_logging(run_dir: Path) -> None:
 
 def write_heartbeat(settings: Settings, status: dict) -> None:
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     path = settings.run_dir / "heartbeat.json"
     payload = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "phase": settings.phase,
         "live_trade_enabled": settings.live_trade_enabled,
         "is_live_mode": settings.is_live(),
@@ -127,6 +127,7 @@ def run_once(
             "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
             "yfinance_strict_gate": settings.yfinance_strict_gate,
             "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
+            "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
         }
 
     # Step 2: scan
@@ -146,6 +147,7 @@ def run_once(
             "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
             "yfinance_strict_gate": settings.yfinance_strict_gate,
             "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
+            "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
         }
     if not is_entry_window():
         log.info("scan skipped: outside entry window (09:45-15:45 ET)")
@@ -161,6 +163,7 @@ def run_once(
             "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
             "yfinance_strict_gate": settings.yfinance_strict_gate,
             "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
+            "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
         }
     result = scanner.scan(watchlist)
     log.info("scan %s: watchlist=%d candidates=%d skip=%s",
@@ -242,6 +245,7 @@ def run_once(
         "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
         "yfinance_strict_gate": settings.yfinance_strict_gate,
         "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
+        "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
         "submitted_count": submitted,
         "reconciled": n_reconciled,
         "denied": reasons[:5],

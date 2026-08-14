@@ -519,6 +519,50 @@ def test_directional_executor_blocks_same_underlying_stack(tmp_path: Path):
     assert denied.reason == "duplicate_directional_underlying:SPY"
 
 
+def test_same_day_underlying_loss_lockout_blocks_more_directional_churn(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        max_contract_dollar=500,
+        per_trade_risk_pct=10.0,
+        directional_underlying_loss_lockout_dollar=50.0,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+    position_id = Journal.new_position_id()
+    journal.append(TradeEvent(
+        event_id="open-qqq-loss",
+        ts=Journal.now_iso(),
+        kind="open",
+        symbol="QQQ260817C00745000",
+        side="buy",
+        qty=6,
+        price=0.19,
+        position_id=position_id,
+        strategy_id="long_call",
+    ))
+    journal.upsert(TradeEvent(
+        event_id="close-qqq-loss",
+        ts=Journal.now_iso(),
+        kind="close",
+        symbol="QQQ260817C00745000",
+        side="sell",
+        qty=6,
+        price=0.09,
+        position_id=position_id,
+        realized_pnl=-60.0,
+        strategy_id="long_call",
+    ))
+
+    sig = LongPutSignal(symbol="QQQ260818P00720000", expiry="2026-08-18", strike=720, limit_price=0.30, conviction=0.9, dte=4)
+    denied = executor.submit_long_put(sig, equity=10_000, state=risk.load_state())
+
+    assert denied.accepted is False
+    assert denied.reason == "directional_underlying_loss_lockout:QQQ:-60.00"
+    broker.submit_buy.assert_not_called()
+
+
 def test_reconcile_long_option_open_uses_actual_broker_fill(tmp_path: Path):
     settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
     broker = MagicMock(spec=BrokerClient)

@@ -20,9 +20,11 @@ import json
 import logging
 import math
 import re
+import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo
 
 from ..broker import BrokerClient
 from ..config import Settings
@@ -34,6 +36,7 @@ from ..strategies.long_equity import LongEquitySignal
 from ..strategies.long_put import LongPutSignal
 
 log = logging.getLogger("flip_options_bot.executor")
+ET = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -71,6 +74,13 @@ class Executor:
             reason = f"duplicate_directional_underlying:{underlying}"
             log.info("risk denied %s: %s", signal.symbol, reason)
             return ExecutionResult(accepted=False, reason=reason)
+        lockout = float(getattr(self.settings, "directional_underlying_loss_lockout_dollar", 0.0) or 0.0)
+        if underlying and lockout > 0:
+            realized = self._directional_underlying_realized_today(underlying)
+            if realized <= -abs(lockout):
+                reason = f"directional_underlying_loss_lockout:{underlying}:{realized:.2f}"
+                log.info("risk denied %s: %s", signal.symbol, reason)
+                return ExecutionResult(accepted=False, reason=reason)
 
         # === Risk gate ===
         decision = self.risk.evaluate_pre_trade(
@@ -457,6 +467,27 @@ class Executor:
             if pos_underlying == underlying:
                 return True
         return False
+
+    def _directional_underlying_realized_today(self, underlying: str) -> float:
+        """Realized directional P&L for one underlying in the current ET session."""
+        today_et = datetime.now(UTC).astimezone(ET).date()
+        day_start_utc = datetime.combine(today_et, time.min, tzinfo=ET).astimezone(UTC)
+        total = 0.0
+        with sqlite3.connect(self.journal.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT symbol, strategy_id, realized_pnl
+                FROM positions
+                WHERE state = 'closed' AND closed_at IS NOT NULL AND closed_at >= ?
+                """,
+                (day_start_utc.isoformat(),),
+            ).fetchall()
+        for symbol, strategy_id, realized_pnl in rows:
+            if strategy_id not in {"long_call", "long_put"}:
+                continue
+            if self._occ_underlying(str(symbol or "")) == underlying:
+                total += float(realized_pnl or 0.0)
+        return round(total, 2)
 
     def _has_open_bpcs_underlying(self, underlying: str) -> bool:
         """One logical credit-spread exposure per underlying at a time.

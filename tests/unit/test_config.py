@@ -97,6 +97,7 @@ def test_high_reward_directional_env(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("FOB_LONG_OPTION_MIN_PREMIUM", "0.20")
     monkeypatch.setenv("FOB_LONG_OPTION_MAX_SPREAD_PCT", "0.30")
     monkeypatch.setenv("FOB_LONG_OPTION_CONVEXITY_WEIGHT", "0.25")
+    monkeypatch.setenv("FOB_DIRECTIONAL_UNDERLYING_LOSS_LOCKOUT_DOLLAR", "40")
 
     settings = Settings.from_env()
 
@@ -105,6 +106,7 @@ def test_high_reward_directional_env(monkeypatch, tmp_path: Path):
     assert settings.long_option_min_premium == 0.20
     assert settings.long_option_max_spread_pct == 0.30
     assert settings.long_option_convexity_weight == 0.25
+    assert settings.directional_underlying_loss_lockout_dollar == 40.0
 
 
 def test_yfinance_confirmation_env(monkeypatch, tmp_path: Path):
