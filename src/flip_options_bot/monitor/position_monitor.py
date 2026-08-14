@@ -42,7 +42,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 
 from ..broker import BrokerClient
 from ..config import Settings
@@ -102,6 +102,7 @@ class PositionMonitor:
         result = MonitorTick()
         positions = self.journal.get_open_positions()
         result.positions_seen = len(positions)
+        pending_close_symbols = self._pending_close_symbols()
 
         for pos in positions:
             qty_open = pos.get("qty_open", 0) or 0
@@ -113,6 +114,10 @@ class PositionMonitor:
             symbol = pos.get("symbol", "")
             position_id = pos.get("position_id", "")
             strategy_id = pos.get("strategy_id", "") or ""
+
+            if symbol in pending_close_symbols and not symbol.startswith("BPCS:"):
+                log.info("monitor skip %s — pending close order already working", symbol)
+                continue
 
             if strategy_id == "bull_put_credit_spread" or symbol.startswith("BPCS:"):
                 spread_decision = self._evaluate_spread_position(pos, qty, state)
@@ -201,6 +206,32 @@ class PositionMonitor:
             )
         return result
 
+    def _pending_close_symbols(self) -> set[str]:
+        """Return symbols that already have a bot-owned SELL close order working.
+
+        A `close_attempt` keeps the journal position open until broker fill.
+        Without this guard, the monitor can submit a duplicate SELL every tick
+        while the first close limit is still resting.
+        """
+        try:
+            orders = self.broker.list_open_orders()
+        except Exception as exc:
+            log.warning("could not inspect open orders for pending-close guard: %s", exc)
+            return set()
+        symbols: set[str] = set()
+        for order in orders or []:
+            coid = str(getattr(order, "client_order_id", "") or "")
+            side = str(getattr(order, "side", "") or "").upper()
+            symbol = str(getattr(order, "symbol", "") or "")
+            if (
+                coid.startswith("close-")
+                and not coid.startswith("close-spread-")
+                and side.endswith("SELL")
+                and symbol
+            ):
+                symbols.add(symbol)
+        return symbols
+
     def _evaluate_long_equity_position(
         self,
         pos: dict,
@@ -258,8 +289,6 @@ class PositionMonitor:
         """
         if mark <= 0 or avg_entry <= 0:
             return None
-
-        qty_open = pos.get("qty_open", 0) or 0
 
         # === 1. SL — full exit, no partial ===
         if mark <= avg_entry * self.sl_threshold_pct:
@@ -328,7 +357,7 @@ class PositionMonitor:
         """
         position_id = pos.get("position_id", "")
         legs = self.journal.get_legs_for_position(position_id)
-        open_spread = next((l for l in legs if l.get("kind") == "open_spread"), None)
+        open_spread = next((leg for leg in legs if leg.get("kind") == "open_spread"), None)
         if not open_spread:
             return None
 

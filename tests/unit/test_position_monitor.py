@@ -44,6 +44,7 @@ def _wire_monitor(tmp_path: Path):
     risk = MagicMock()
     risk.load_state = MagicMock(return_value=RiskState())
     broker = MagicMock()
+    broker.list_open_orders = MagicMock(return_value=[])
     closer = MagicMock(spec=Closer)
     closer.flatten_position = MagicMock(
         return_value=ExecutionResult(accepted=True, client_order_id="close-1")
@@ -81,6 +82,24 @@ def _open_position(journal: Journal, symbol: str, qty: int, avg_entry: float,
 
 def _snap(bid: float, ask: float) -> dict:
     return {"bid": bid, "ask": ask}
+
+
+def test_pending_close_order_blocks_duplicate_close_submit(tmp_path: Path):
+    """A resting close SELL should stop the monitor from submitting duplicates."""
+    monitor, journal, closer = _wire_monitor(tmp_path)
+    symbol = "SPY260815C00750000"
+    _open_position(journal, symbol, qty=2, avg_entry=1.00)
+    order = MagicMock()
+    order.client_order_id = "close-existing"
+    order.side = "sell"
+    order.symbol = symbol
+    monitor.broker.list_open_orders = MagicMock(return_value=[order])
+    monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=0.40, ask=0.40))
+
+    tick = monitor.tick(RiskState())
+
+    assert tick.closes_triggered == 0
+    closer.flatten_position.assert_not_called()
 
 
 # ===== SL =====

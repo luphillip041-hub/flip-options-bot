@@ -12,7 +12,7 @@ import pytest
 
 from flip_options_bot.broker import BrokerClient
 from flip_options_bot.execution import Executor
-from flip_options_bot.journal import Journal
+from flip_options_bot.journal import Journal, TradeEvent
 from flip_options_bot.risk import RiskEngine
 
 
@@ -168,8 +168,58 @@ def test_cancel_stale_orders_skips_journaled(tmp_path: Path):
 
     broker.list_open_orders = MagicMock(return_value=[order])
     broker.cancel_order = MagicMock()
-    journal.has_event = MagicMock(return_value=True)  # already journaled
+    journal.append(TradeEvent(
+        event_id="open-123",
+        ts="2026-08-11T21:59:00+00:00",
+        kind="open",
+        symbol="SPY260815C00750000",
+        side="buy",
+        qty=1,
+        price=1.0,
+        position_id=Journal.new_position_id(),
+        strategy_id="long_call",
+    ))
 
     n = executor.cancel_stale_orders(older_than_seconds=120)
     assert n == 0
     broker.cancel_order.assert_not_called()
+
+
+def test_cancel_stale_orders_cancels_stale_close_attempt(tmp_path: Path):
+    """A stale close_attempt is an unfilled exit, so it must be cancelable/repriceable."""
+    broker = _make_broker()
+    journal = Journal(tmp_path)
+
+    executor = Executor.__new__(Executor)
+    executor.broker = broker
+    executor.journal = journal
+
+    from alpaca.trading.enums import OrderStatus, OrderSide
+    old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=timezone.utc)
+    coid = "close-123"
+
+    order = MagicMock()
+    order.id = "id-close-123"
+    order.symbol = "SPY260815C00750000"
+    order.status = OrderStatus.ACCEPTED
+    order.side = OrderSide.SELL
+    order.client_order_id = coid
+    order.submitted_at = old
+
+    journal.append(TradeEvent(
+        event_id=coid,
+        ts="2026-08-11T21:59:00+00:00",
+        kind="close_attempt",
+        symbol="SPY260815C00750000",
+        side="sell",
+        qty=1,
+        price=0.9,
+        position_id=Journal.new_position_id(),
+        raw_broker_fill={"close_position_id": "pos-1"},
+    ))
+    broker.list_open_orders = MagicMock(return_value=[order])
+    broker.cancel_order = MagicMock()
+
+    n = executor.cancel_stale_orders(older_than_seconds=120)
+    assert n == 1
+    broker.cancel_order.assert_called_once_with("id-close-123")

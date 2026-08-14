@@ -673,12 +673,17 @@ class Executor:
             if not coid:
                 continue
 
-            # Check journal: if already recorded as 'open' we don't want to
-            # cancel. Only cancel orders that haven't been journaled yet
-            # (i.e., they're stuck mid-submission).
-            if self.journal.has_event(coid):
-                log.debug("stale-order skip %s — already journaled", coid)
-                continue
+            event = self.journal.get_event(coid)
+            if event:
+                kind = str(event.get("kind") or "")
+                side = str(getattr(order, "side", "")).upper()
+                is_pending_close = kind == "close_attempt" and side.endswith("SELL")
+                if not is_pending_close:
+                    # Filled/journaled opens must not be cancelled here. A
+                    # close_attempt is different: it is an unfilled exit intent,
+                    # so canceling it lets the monitor reprice on the next tick.
+                    log.debug("stale-order skip %s — journaled kind=%s", coid, kind)
+                    continue
 
             try:
                 self.broker.cancel_order(str(order.id))
