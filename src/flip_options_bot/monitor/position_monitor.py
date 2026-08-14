@@ -97,6 +97,9 @@ class PositionMonitor:
         # and give back almost the whole winner.
         self.trailing_retention = getattr(settings, "trailing_retention", 0.50)
         self.profit_floor_pct = getattr(settings, "profit_floor_pct", 1.10)
+        self.runner_trailing_arm_pct = getattr(settings, "runner_trailing_arm_pct", 0.25)
+        self.runner_trailing_retention = getattr(settings, "runner_trailing_retention", 0.50)
+        self.runner_profit_floor_pct = getattr(settings, "runner_profit_floor_pct", 1.10)
         # Min dollar profit before TP fires — prevents exiting at a wash
         # when spread is so wide that even a +50% mark = small dollars.
         self.min_tp_profit_dollar = getattr(settings, "min_tp_profit_dollar", 25.0)
@@ -260,7 +263,12 @@ class PositionMonitor:
 
         gain_pct = (peak_mark - avg_entry) / avg_entry
         if gain_pct >= self.trailing_arm_pct:
-            exit_floor = self._trailing_exit_floor(avg_entry, peak_mark)
+            exit_floor = self._trailing_exit_floor(
+                avg_entry,
+                peak_mark,
+                retention=self.trailing_retention,
+                profit_floor_pct=self.profit_floor_pct,
+            )
             if mark <= exit_floor:
                 return ("equity_trailing_floor", qty, round(mark, 2))
 
@@ -327,11 +335,26 @@ class PositionMonitor:
 
         # === 4. trailing_floor — only fires when armed (peak gain >= arm_pct) ===
         gain_pct = (peak_mark - avg_entry) / avg_entry
-        if gain_pct >= self.trailing_arm_pct:
-            exit_floor = self._trailing_exit_floor(avg_entry, peak_mark)
+        if qty_closed > 0:
+            trailing_arm = self.runner_trailing_arm_pct
+            trailing_retention = self.runner_trailing_retention
+            profit_floor_pct = self.runner_profit_floor_pct
+            reason = "runner_trailing_floor"
+        else:
+            trailing_arm = self.trailing_arm_pct
+            trailing_retention = self.trailing_retention
+            profit_floor_pct = self.profit_floor_pct
+            reason = "trailing_floor"
+        if gain_pct >= trailing_arm:
+            exit_floor = self._trailing_exit_floor(
+                avg_entry,
+                peak_mark,
+                retention=trailing_retention,
+                profit_floor_pct=profit_floor_pct,
+            )
             if mark <= exit_floor:
-                limit_price = self._exit_price("trailing_floor", mark, avg_entry)
-                return ("trailing_floor", qty, limit_price)
+                limit_price = self._exit_price(reason, mark, avg_entry)
+                return (reason, qty, limit_price)
 
         # === 5. EOD flatten — full exit, weekday only, last `eod_minutes` ===
         now = now_utc()
@@ -436,7 +459,14 @@ class PositionMonitor:
         except ValueError:
             return None
 
-    def _trailing_exit_floor(self, avg_entry: float, peak_mark: float) -> float:
+    def _trailing_exit_floor(
+        self,
+        avg_entry: float,
+        peak_mark: float,
+        *,
+        retention: float | None = None,
+        profit_floor_pct: float | None = None,
+    ) -> float:
         """Return the gain-protecting floor after a winner has armed.
 
         This keeps a configured fraction of the observed gain instead of a
@@ -444,11 +474,13 @@ class PositionMonitor:
         +20% to +80% and reverse fast; peak-price retention under-protects
         those modest-dollar winners.
         """
-        retained_gain_floor = avg_entry + (peak_mark - avg_entry) * self.trailing_retention
+        retention_value = self.trailing_retention if retention is None else retention
+        profit_floor_value = self.profit_floor_pct if profit_floor_pct is None else profit_floor_pct
+        retained_gain_floor = avg_entry + (peak_mark - avg_entry) * retention_value
         # If the arm is below the fixed profit floor, do not create an
         # impossible floor above the best observed mark; that would trigger an
         # immediate close the same tick a small winner arms.
-        profit_floor = min(avg_entry * self.profit_floor_pct, peak_mark)
+        profit_floor = min(avg_entry * profit_floor_value, peak_mark)
         return max(retained_gain_floor, profit_floor)
 
     def _exit_price(self, trigger: str, mark: float, avg_entry: float) -> float:

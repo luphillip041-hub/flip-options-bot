@@ -27,6 +27,9 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
         "FOB_TRAILING_RETENTION",
         "FOB_PROFIT_FLOOR_PCT",
         "FOB_MIN_TP_PROFIT_DOLLAR",
+        "FOB_RUNNER_TRAILING_ARM_PCT",
+        "FOB_RUNNER_TRAILING_RETENTION",
+        "FOB_RUNNER_PROFIT_FLOOR_PCT",
     ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -38,11 +41,14 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
     assert settings.per_trade_risk_pct == 2.0
     assert settings.daily_loss_cap_pct == 6.0
     assert settings.tp_multiplier == 1.25
-    assert settings.tp_full_multiplier == 2.50
+    assert settings.tp_full_multiplier == 4.00
     assert settings.trailing_arm_pct == 0.06
     assert settings.trailing_retention == 0.70
     assert settings.profit_floor_pct == 1.08
     assert settings.min_tp_profit_dollar == 10.0
+    assert settings.runner_trailing_arm_pct == 0.25
+    assert settings.runner_trailing_retention == 0.50
+    assert settings.runner_profit_floor_pct == 1.10
 
 
 def test_settings_overrides_via_env(monkeypatch):
@@ -129,6 +135,9 @@ def test_gain_capture_env(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("FOB_TRAILING_RETENTION", "0.80")
     monkeypatch.setenv("FOB_PROFIT_FLOOR_PCT", "1.12")
     monkeypatch.setenv("FOB_MIN_TP_PROFIT_DOLLAR", "12.5")
+    monkeypatch.setenv("FOB_RUNNER_TRAILING_ARM_PCT", "0.30")
+    monkeypatch.setenv("FOB_RUNNER_TRAILING_RETENTION", "0.40")
+    monkeypatch.setenv("FOB_RUNNER_PROFIT_FLOOR_PCT", "1.15")
 
     settings = Settings.from_env()
 
@@ -138,6 +147,9 @@ def test_gain_capture_env(monkeypatch, tmp_path: Path):
     assert settings.trailing_retention == 0.80
     assert settings.profit_floor_pct == 1.12
     assert settings.min_tp_profit_dollar == 12.5
+    assert settings.runner_trailing_arm_pct == 0.30
+    assert settings.runner_trailing_retention == 0.40
+    assert settings.runner_profit_floor_pct == 1.15
 
 
 def test_yfinance_confirmation_env(monkeypatch, tmp_path: Path):

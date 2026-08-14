@@ -134,6 +134,9 @@ def run_once(
             "trailing_retention": settings.trailing_retention,
             "profit_floor_pct": settings.profit_floor_pct,
             "min_tp_profit_dollar": settings.min_tp_profit_dollar,
+            "runner_trailing_arm_pct": settings.runner_trailing_arm_pct,
+            "runner_trailing_retention": settings.runner_trailing_retention,
+            "runner_profit_floor_pct": settings.runner_profit_floor_pct,
         }
 
     # Step 2: scan
@@ -160,6 +163,9 @@ def run_once(
             "trailing_retention": settings.trailing_retention,
             "profit_floor_pct": settings.profit_floor_pct,
             "min_tp_profit_dollar": settings.min_tp_profit_dollar,
+            "runner_trailing_arm_pct": settings.runner_trailing_arm_pct,
+            "runner_trailing_retention": settings.runner_trailing_retention,
+            "runner_profit_floor_pct": settings.runner_profit_floor_pct,
         }
     if not is_entry_window():
         log.info("scan skipped: outside entry window (09:45-15:45 ET)")
@@ -182,6 +188,9 @@ def run_once(
             "trailing_retention": settings.trailing_retention,
             "profit_floor_pct": settings.profit_floor_pct,
             "min_tp_profit_dollar": settings.min_tp_profit_dollar,
+            "runner_trailing_arm_pct": settings.runner_trailing_arm_pct,
+            "runner_trailing_retention": settings.runner_trailing_retention,
+            "runner_profit_floor_pct": settings.runner_profit_floor_pct,
         }
     result = scanner.scan(watchlist)
     log.info("scan %s: watchlist=%d candidates=%d skip=%s",
@@ -270,6 +279,9 @@ def run_once(
         "trailing_retention": settings.trailing_retention,
         "profit_floor_pct": settings.profit_floor_pct,
         "min_tp_profit_dollar": settings.min_tp_profit_dollar,
+        "runner_trailing_arm_pct": settings.runner_trailing_arm_pct,
+        "runner_trailing_retention": settings.runner_trailing_retention,
+        "runner_profit_floor_pct": settings.runner_profit_floor_pct,
         "submitted_count": submitted,
         "reconciled": n_reconciled,
         "denied": reasons[:5],

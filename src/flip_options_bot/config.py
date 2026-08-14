@@ -113,11 +113,16 @@ class Settings:
     # Gain-protection monitor knobs
     sl_threshold_pct: float = 0.50       # SL fires at 50% of entry
     tp_multiplier: float = 1.25          # partial TP at +25% on multi-contract lots
-    tp_full_multiplier: float = 2.50     # full TP only if no partial AND +150%
+    tp_full_multiplier: float = 4.00     # 1-lot moonshot full TP at +300%
     trailing_arm_pct: float = 0.06       # trailing floor arms after +6%
     trailing_retention: float = 0.70     # retain 70% of observed peak gain
     profit_floor_pct: float = 1.08       # never give gains back below entry +8%
     min_tp_profit_dollar: float = 10.0   # capture small high-convexity winners
+    # After a partial TP, the remaining contracts are moonshot runners: they
+    # get more room than the first tranche, but still cannot give back all green.
+    runner_trailing_arm_pct: float = 0.25
+    runner_trailing_retention: float = 0.50
+    runner_profit_floor_pct: float = 1.10
 
     long_call_enabled: bool = True
     # 0.10% (10 bps) — current SPY 20-min moves are running -0.05% to
@@ -290,11 +295,20 @@ class Settings:
             ),
             sl_threshold_pct=_coerce_float(merged, "FOB_SL_THRESHOLD_PCT", 0.50),
             tp_multiplier=_coerce_float(merged, "FOB_TP_MULTIPLIER", 1.25),
-            tp_full_multiplier=_coerce_float(merged, "FOB_TP_FULL_MULTIPLIER", 2.50),
+            tp_full_multiplier=_coerce_float(merged, "FOB_TP_FULL_MULTIPLIER", 4.00),
             trailing_arm_pct=_coerce_float(merged, "FOB_TRAILING_ARM_PCT", 0.06),
             trailing_retention=_coerce_float(merged, "FOB_TRAILING_RETENTION", 0.70),
             profit_floor_pct=_coerce_float(merged, "FOB_PROFIT_FLOOR_PCT", 1.08),
             min_tp_profit_dollar=_coerce_float(merged, "FOB_MIN_TP_PROFIT_DOLLAR", 10.0),
+            runner_trailing_arm_pct=_coerce_float(
+                merged, "FOB_RUNNER_TRAILING_ARM_PCT", 0.25
+            ),
+            runner_trailing_retention=_coerce_float(
+                merged, "FOB_RUNNER_TRAILING_RETENTION", 0.50
+            ),
+            runner_profit_floor_pct=_coerce_float(
+                merged, "FOB_RUNNER_PROFIT_FLOOR_PCT", 1.10
+            ),
             long_call_enabled=_coerce_bool(merged, "FOB_LONG_CALL_ENABLED", True),
             long_call_min_direction_move_pct=_coerce_float(
                 merged, "FOB_LONG_CALL_MIN_DIRECTION_MOVE_PCT", 0.0010

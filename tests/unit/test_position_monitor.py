@@ -38,6 +38,9 @@ def _wire_monitor(tmp_path: Path):
         trailing_retention=0.50,
         profit_floor_pct=1.10,
         min_tp_profit_dollar=25.0,
+        runner_trailing_arm_pct=0.25,
+        runner_trailing_retention=0.50,
+        runner_profit_floor_pct=1.10,
         close_eod_minutes=15,
     )
     journal = Journal(tmp_path)
@@ -267,9 +270,8 @@ def test_trailing_floor_respects_higher_peak_retention(tmp_path: Path):
     assert tick.reasons == {"tp_partial": 1}
 
 
-def test_trailing_floor_after_partial_taken(tmp_path: Path):
-    """After partial taken (qty_closed=1, qty=1 left), trailing_floor is the
-    only gain-protection active. Peak was 3.00, mark=1.50 → fires."""
+def test_runner_trailing_floor_after_partial_taken(tmp_path: Path):
+    """After partial taken, remaining contracts use moonshot runner floor."""
     monitor, journal, closer = _wire_monitor(tmp_path)
     _open_position(
         journal, "SPY260815C00750000", qty=2, avg_entry=1.00,
@@ -279,12 +281,52 @@ def test_trailing_floor_after_partial_taken(tmp_path: Path):
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.50, ask=1.50))
     tick = monitor.tick(RiskState())
     # qty_closed=1 means tp_partial/tp_full won't fire again.
-    # gain_pct = (3.00-1.00)/1.00 = 2.00 >= 0.10 arm → armed
+    # gain_pct = (3.00-1.00)/1.00 = 2.00 >= 0.25 runner arm → armed
     # retained_gain_floor = 1.00 + (3.00-1.00)*0.50 = 2.00
     # profit_floor = 1.00 * 1.10 = 1.10
     # exit_floor = max(2.00, 1.10) = 2.00
-    # mark=1.50 ≤ 2.00 → trailing_floor fires
-    assert tick.reasons == {"trailing_floor": 1}
+    # mark=1.50 ≤ 2.00 → runner_trailing_floor fires
+    assert tick.reasons == {"runner_trailing_floor": 1}
+
+
+def test_runner_after_partial_has_more_room_for_moonshot(tmp_path: Path):
+    """After banking a partial, the remaining runner should not be choked early."""
+    monitor, journal, closer = _wire_monitor(tmp_path)
+    _open_position(
+        journal,
+        "SPY260815C00750000",
+        qty=2,
+        avg_entry=1.00,
+        qty_closed=1,
+        peak_mark=1.20,
+    )
+
+    monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.10, ask=1.10))
+    tick = monitor.tick(RiskState())
+
+    assert tick.closes_triggered == 0
+    closer.flatten_position.assert_not_called()
+
+
+def test_runner_trailing_floor_fires_after_moonshot_reversal(tmp_path: Path):
+    """After partial, runner uses looser moonshot floor once +25% peak is reached."""
+    monitor, journal, closer = _wire_monitor(tmp_path)
+    _open_position(
+        journal,
+        "SPY260815C00750000",
+        qty=2,
+        avg_entry=1.00,
+        qty_closed=1,
+        peak_mark=1.60,
+    )
+
+    # Runner floor = entry + 50% of 0.60 gain = 1.30; mark below it exits.
+    monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.29, ask=1.29))
+    tick = monitor.tick(RiskState())
+
+    assert tick.reasons == {"runner_trailing_floor": 1}
+    call = closer.flatten_position.call_args
+    assert call.kwargs["reason"] == "runner_trailing_floor"
 
 
 def test_trailing_floor_retains_percent_of_gain_not_peak_price(tmp_path: Path):
