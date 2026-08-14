@@ -107,7 +107,7 @@ def test_pending_close_order_blocks_duplicate_close_submit(tmp_path: Path):
 def test_sl_fires_at_50pct_full_exit(tmp_path: Path):
     """SL: mark = 40% of entry → exit full position."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00)
+    _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=0.40, ask=0.40))
     tick = monitor.tick(RiskState())
@@ -126,7 +126,7 @@ def test_sl_fires_at_50pct_full_exit(tmp_path: Path):
 def test_tp_partial_at_50pct_sells_half(tmp_path: Path):
     """TP partial at +50%: entry $1, mark $1.50, qty=2 → sell 1, lock $50 gain."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00)
+    _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.50, ask=1.50))
     tick = monitor.tick(RiskState())
@@ -142,7 +142,7 @@ def test_tp_partial_at_50pct_sells_half(tmp_path: Path):
 def test_tp_partial_odd_qty_rounds_up(tmp_path: Path):
     """TP partial with qty=3 → close 2 (ceil(3/2))."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(journal, "SPY260815C00750000", qty=3, avg_entry=1.00)
+    _open_position(journal, "SPY260815C00750000", qty=3, avg_entry=1.00)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.50, ask=1.50))
     tick = monitor.tick(RiskState())
@@ -171,7 +171,7 @@ def test_min_profit_dollar_blocks_tp_at_wash(tmp_path: Path):
     )
     monitor = PositionMonitor(settings, broker, journal, risk, closer)
 
-    pos_id = _open_position(journal, "SPY260815C00750000", qty=1, avg_entry=1.00)
+    _open_position(journal, "SPY260815C00750000", qty=1, avg_entry=1.00)
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.50, ask=1.50))
     tick = monitor.tick(RiskState())
 
@@ -195,7 +195,7 @@ def test_min_profit_dollar_passes_with_qty_2(tmp_path: Path):
     )
     monitor = PositionMonitor(settings, broker, journal, risk, closer)
 
-    pos_id = _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00)
+    _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00)
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.50, ask=1.50))
     tick = monitor.tick(RiskState())
     # 2 contracts * ($1.50 - $1.00) * 100 = $100 >= $100 min → TP fires
@@ -204,27 +204,25 @@ def test_min_profit_dollar_passes_with_qty_2(tmp_path: Path):
 
 # ===== TP full =====
 
-def test_tp_full_only_at_2x_with_no_partial(tmp_path: Path):
-    """mark=2.5x entry, qty=1, qty_closed=0 → full TP exit."""
+def test_single_contract_runner_uses_full_tp_not_partial(tmp_path: Path):
+    """Single-contract winners are runners: no fake partial on a 1-lot."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(journal, "SPY260815C00750000", qty=1, avg_entry=1.00)
+    _open_position(journal, "SPY260815C00750000", qty=1, avg_entry=1.00)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=2.50, ask=2.50))
     tick = monitor.tick(RiskState())
-    # tp_full would fire (mark=2.5 >= tp_full_multiplier=2.0)
-    # But also tp_partial fires (mark=2.5 >= tp_multiplier=1.50)
-    # tp_partial has priority
-    assert tick.reasons == {"tp_partial": 1}
+    # tp_partial is multi-contract only. A 1-lot exits only at full TP.
+    assert tick.reasons == {"tp": 1}
     call = closer.flatten_position.call_args
-    assert call.kwargs["reason"] == "tp_partial"
-    assert call.kwargs["qty"] == 1  # half of 1 = 1
+    assert call.kwargs["reason"] == "tp"
+    assert call.kwargs["qty"] == 1
 
 
 def test_tp_full_only_after_no_partial(tmp_path: Path):
     """After partial was taken (qty_closed=1, qty=1 left), full TP should NOT
     fire again — the remaining half is left to run with the trailing floor."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00, qty_closed=1)
+    _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00, qty_closed=1)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=2.50, ask=2.50))
     tick = monitor.tick(RiskState())
@@ -243,7 +241,7 @@ def test_trailing_floor_never_gives_gains_back_to_entry(tmp_path: Path):
     We use max(retention, profit_floor) = 1.10.
     Mark=1.00 < 1.10 → trailing_floor fires."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(
+    _open_position(
         journal, "SPY260815C00750000", qty=1, avg_entry=1.00, peak_mark=1.10
     )
 
@@ -259,7 +257,7 @@ def test_trailing_floor_respects_higher_peak_retention(tmp_path: Path):
     """Peak was +200% (peak=3.00). Trailing floor target=1.50. But mark=1.50
     also hits +50% tp_partial → tp_partial wins (priority)."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(
+    _open_position(
         journal, "SPY260815C00750000", qty=2, avg_entry=1.00, peak_mark=3.00
     )
 
@@ -273,7 +271,7 @@ def test_trailing_floor_after_partial_taken(tmp_path: Path):
     """After partial taken (qty_closed=1, qty=1 left), trailing_floor is the
     only gain-protection active. Peak was 3.00, mark=1.50 → fires."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(
+    _open_position(
         journal, "SPY260815C00750000", qty=2, avg_entry=1.00,
         qty_closed=1, peak_mark=3.00,
     )
@@ -282,17 +280,50 @@ def test_trailing_floor_after_partial_taken(tmp_path: Path):
     tick = monitor.tick(RiskState())
     # qty_closed=1 means tp_partial/tp_full won't fire again.
     # gain_pct = (3.00-1.00)/1.00 = 2.00 >= 0.10 arm → armed
-    # retention_target = 3.00 * 0.50 = 1.50
+    # retained_gain_floor = 1.00 + (3.00-1.00)*0.50 = 2.00
     # profit_floor = 1.00 * 1.10 = 1.10
-    # exit_floor = max(1.50, 1.10) = 1.50
-    # mark=1.50 ≤ 1.50 → trailing_floor fires
+    # exit_floor = max(2.00, 1.10) = 2.00
+    # mark=1.50 ≤ 2.00 → trailing_floor fires
     assert tick.reasons == {"trailing_floor": 1}
+
+
+def test_trailing_floor_retains_percent_of_gain_not_peak_price(tmp_path: Path):
+    """Peak retention should retain gains, not multiply the whole option price."""
+    monitor, journal, closer = _wire_monitor(tmp_path)
+    _open_position(
+        journal,
+        "SPY260815C00750000",
+        qty=1,
+        avg_entry=1.00,
+        peak_mark=1.50,
+    )
+
+    # Old formula peak*0.50 = 0.75 would not close here. New formula retains
+    # 50% of the 0.50 gain -> floor 1.25, so the winner is protected.
+    monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.24, ask=1.24))
+    tick = monitor.tick(RiskState())
+
+    assert tick.reasons == {"trailing_floor": 1}
+    call = closer.flatten_position.call_args
+    assert call.kwargs["reason"] == "trailing_floor"
+
+
+def test_fixed_profit_floor_never_exceeds_observed_peak(tmp_path: Path):
+    """A lower arm than profit floor should not instantly close at arm tick."""
+    monitor, _, _ = _wire_monitor(tmp_path)
+    monitor.trailing_arm_pct = 0.06
+    monitor.profit_floor_pct = 1.08
+    monitor.trailing_retention = 0.70
+
+    floor = monitor._trailing_exit_floor(avg_entry=1.00, peak_mark=1.06)
+
+    assert floor == 1.06
 
 
 def test_trailing_floor_not_armed_when_gain_below_threshold(tmp_path: Path):
     """Peak gain was only +5% (< arm_pct=10%). No trailing floor."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    pos_id = _open_position(
+    _open_position(
         journal, "SPY260815C00750000", qty=1, avg_entry=1.00, peak_mark=1.05
     )
 

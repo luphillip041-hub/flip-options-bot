@@ -91,6 +91,10 @@ class PositionMonitor:
         self.tp_multiplier = getattr(settings, "tp_multiplier", 1.50)
         self.tp_full_multiplier = getattr(settings, "tp_full_multiplier", 2.00)
         self.trailing_arm_pct = getattr(settings, "trailing_arm_pct", 0.10)
+        # Retain this fraction of observed peak gain, not this fraction of
+        # peak price. Example: entry=1.00, peak=1.50, retention=0.70 gives a
+        # floor at 1.35. The old peak*retention formula would floor at 1.05
+        # and give back almost the whole winner.
         self.trailing_retention = getattr(settings, "trailing_retention", 0.50)
         self.profit_floor_pct = getattr(settings, "profit_floor_pct", 1.10)
         # Min dollar profit before TP fires — prevents exiting at a wash
@@ -256,7 +260,7 @@ class PositionMonitor:
 
         gain_pct = (peak_mark - avg_entry) / avg_entry
         if gain_pct >= self.trailing_arm_pct:
-            exit_floor = max(peak_mark * self.trailing_retention, avg_entry * self.profit_floor_pct)
+            exit_floor = self._trailing_exit_floor(avg_entry, peak_mark)
             if mark <= exit_floor:
                 return ("equity_trailing_floor", qty, round(mark, 2))
 
@@ -282,8 +286,9 @@ class PositionMonitor:
 
         Gain-protection semantics (priority order):
         1. SL always wins (no partial — full exit)
-        2. tp_partial at +50%: sell half if no partial yet, IF minimum profit dollar met
-        3. tp_full at +100% (if no partial was taken): exit all
+        2. tp_partial at configured TP: sell half on multi-contract lots if no partial yet,
+           IF minimum profit dollar met. Single-contract positions stay runners.
+        3. tp_full at configured full TP (if no partial was taken): exit all
         4. trailing_floor at arm+10% & mark < max(peak*retention, entry*profit_floor)
         5. EOD flatten — full exit, last 15 min of session
         """
@@ -302,6 +307,7 @@ class PositionMonitor:
 
         if (
             mark >= avg_entry * self.tp_multiplier
+            and qty > 1
             and qty_closed == 0
             and potential_profit_dollar >= self.min_tp_profit_dollar
         ):
@@ -322,9 +328,7 @@ class PositionMonitor:
         # === 4. trailing_floor — only fires when armed (peak gain >= arm_pct) ===
         gain_pct = (peak_mark - avg_entry) / avg_entry
         if gain_pct >= self.trailing_arm_pct:
-            retention_target = peak_mark * self.trailing_retention
-            profit_floor = avg_entry * self.profit_floor_pct
-            exit_floor = max(retention_target, profit_floor)
+            exit_floor = self._trailing_exit_floor(avg_entry, peak_mark)
             if mark <= exit_floor:
                 limit_price = self._exit_price("trailing_floor", mark, avg_entry)
                 return ("trailing_floor", qty, limit_price)
@@ -431,6 +435,21 @@ class PositionMonitor:
             return date(2000 + int(yymmdd[:2]), int(yymmdd[2:4]), int(yymmdd[4:6]))
         except ValueError:
             return None
+
+    def _trailing_exit_floor(self, avg_entry: float, peak_mark: float) -> float:
+        """Return the gain-protecting floor after a winner has armed.
+
+        This keeps a configured fraction of the observed gain instead of a
+        fraction of the whole option price. High-convexity contracts can move
+        +20% to +80% and reverse fast; peak-price retention under-protects
+        those modest-dollar winners.
+        """
+        retained_gain_floor = avg_entry + (peak_mark - avg_entry) * self.trailing_retention
+        # If the arm is below the fixed profit floor, do not create an
+        # impossible floor above the best observed mark; that would trigger an
+        # immediate close the same tick a small winner arms.
+        profit_floor = min(avg_entry * self.profit_floor_pct, peak_mark)
+        return max(retained_gain_floor, profit_floor)
 
     def _exit_price(self, trigger: str, mark: float, avg_entry: float) -> float:
         """Compute the limit price for the close order.

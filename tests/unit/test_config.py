@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,12 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
         "FOB_LONG_OPTION_OTM_LADDER_PCT",
         "FOB_YFINANCE_CONFIRM_1DTE_ENABLED",
         "FOB_YFINANCE_STRICT_GATE",
+        "FOB_TP_MULTIPLIER",
+        "FOB_TP_FULL_MULTIPLIER",
+        "FOB_TRAILING_ARM_PCT",
+        "FOB_TRAILING_RETENTION",
+        "FOB_PROFIT_FLOOR_PCT",
+        "FOB_MIN_TP_PROFIT_DOLLAR",
     ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -31,6 +37,12 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
     assert settings.max_positions == 3
     assert settings.per_trade_risk_pct == 2.0
     assert settings.daily_loss_cap_pct == 6.0
+    assert settings.tp_multiplier == 1.25
+    assert settings.tp_full_multiplier == 2.50
+    assert settings.trailing_arm_pct == 0.06
+    assert settings.trailing_retention == 0.70
+    assert settings.profit_floor_pct == 1.08
+    assert settings.min_tp_profit_dollar == 10.0
 
 
 def test_settings_overrides_via_env(monkeypatch):
@@ -67,7 +79,7 @@ def test_is_live_requires_double_gate(monkeypatch):
 def test_settings_immutable():
     """Settings is a frozen dataclass — cannot mutate at runtime."""
     settings = Settings.from_env()
-    with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+    with pytest.raises(FrozenInstanceError):
         settings.phase = "live"  # type: ignore[misc]
 
 
@@ -107,6 +119,25 @@ def test_high_reward_directional_env(monkeypatch, tmp_path: Path):
     assert settings.long_option_max_spread_pct == 0.30
     assert settings.long_option_convexity_weight == 0.25
     assert settings.directional_underlying_loss_lockout_dollar == 40.0
+
+
+def test_gain_capture_env(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FOB_TP_MULTIPLIER", "1.30")
+    monkeypatch.setenv("FOB_TP_FULL_MULTIPLIER", "3.00")
+    monkeypatch.setenv("FOB_TRAILING_ARM_PCT", "0.05")
+    monkeypatch.setenv("FOB_TRAILING_RETENTION", "0.80")
+    monkeypatch.setenv("FOB_PROFIT_FLOOR_PCT", "1.12")
+    monkeypatch.setenv("FOB_MIN_TP_PROFIT_DOLLAR", "12.5")
+
+    settings = Settings.from_env()
+
+    assert settings.tp_multiplier == 1.30
+    assert settings.tp_full_multiplier == 3.00
+    assert settings.trailing_arm_pct == 0.05
+    assert settings.trailing_retention == 0.80
+    assert settings.profit_floor_pct == 1.12
+    assert settings.min_tp_profit_dollar == 12.5
 
 
 def test_yfinance_confirmation_env(monkeypatch, tmp_path: Path):

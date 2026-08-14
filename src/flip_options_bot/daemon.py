@@ -128,6 +128,12 @@ def run_once(
             "yfinance_strict_gate": settings.yfinance_strict_gate,
             "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
             "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
+            "tp_multiplier": settings.tp_multiplier,
+            "tp_full_multiplier": settings.tp_full_multiplier,
+            "trailing_arm_pct": settings.trailing_arm_pct,
+            "trailing_retention": settings.trailing_retention,
+            "profit_floor_pct": settings.profit_floor_pct,
+            "min_tp_profit_dollar": settings.min_tp_profit_dollar,
         }
 
     # Step 2: scan
@@ -148,6 +154,12 @@ def run_once(
             "yfinance_strict_gate": settings.yfinance_strict_gate,
             "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
             "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
+            "tp_multiplier": settings.tp_multiplier,
+            "tp_full_multiplier": settings.tp_full_multiplier,
+            "trailing_arm_pct": settings.trailing_arm_pct,
+            "trailing_retention": settings.trailing_retention,
+            "profit_floor_pct": settings.profit_floor_pct,
+            "min_tp_profit_dollar": settings.min_tp_profit_dollar,
         }
     if not is_entry_window():
         log.info("scan skipped: outside entry window (09:45-15:45 ET)")
@@ -164,6 +176,12 @@ def run_once(
             "yfinance_strict_gate": settings.yfinance_strict_gate,
             "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
             "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
+            "tp_multiplier": settings.tp_multiplier,
+            "tp_full_multiplier": settings.tp_full_multiplier,
+            "trailing_arm_pct": settings.trailing_arm_pct,
+            "trailing_retention": settings.trailing_retention,
+            "profit_floor_pct": settings.profit_floor_pct,
+            "min_tp_profit_dollar": settings.min_tp_profit_dollar,
         }
     result = scanner.scan(watchlist)
     log.info("scan %s: watchlist=%d candidates=%d skip=%s",
@@ -246,6 +264,12 @@ def run_once(
         "yfinance_strict_gate": settings.yfinance_strict_gate,
         "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
         "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
+        "tp_multiplier": settings.tp_multiplier,
+        "tp_full_multiplier": settings.tp_full_multiplier,
+        "trailing_arm_pct": settings.trailing_arm_pct,
+        "trailing_retention": settings.trailing_retention,
+        "profit_floor_pct": settings.profit_floor_pct,
+        "min_tp_profit_dollar": settings.min_tp_profit_dollar,
         "submitted_count": submitted,
         "reconciled": n_reconciled,
         "denied": reasons[:5],
