@@ -328,7 +328,8 @@ class Scanner:
 
         for expiry in self._ordered_expiries({c["expiry"] for c in contracts}, filters, now):
             dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
-            target_strike = spot * (1.0 - filters.target_otm_pct)
+            target_otm_pct = self._target_otm_pct(filters.target_otm_pct)
+            target_strike = spot * (1.0 - target_otm_pct)
             eligible = [
                 c for c in contracts
                 if c["expiry"] == expiry and c["type"] == "put" and c["open_interest"] > 0
@@ -363,7 +364,10 @@ class Scanner:
                 mid = (bid + ask) / 2
                 spread = ask - bid
                 spread_pct = spread / max(mid, 0.01)
-                if spread_pct > 0.50:
+                if spread_pct > self._max_long_option_spread_pct():
+                    continue
+                otm_pct = self._otm_pct("put", c["strike"], spot)
+                if otm_pct <= 0:
                     continue
                 conviction = compute_put_conviction(
                     direction_move=direction_move,
@@ -377,6 +381,8 @@ class Scanner:
                 entry_price = round(mid + 0.25 * spread, 2)
                 if entry_price * 100 > self.settings.max_contract_dollar:
                     continue
+                if entry_price < self._min_long_option_premium():
+                    continue
                 signals.append(LongPutSignal(
                     symbol=c["symbol"],
                     expiry=expiry,
@@ -385,11 +391,12 @@ class Scanner:
                     limit_price=entry_price,
                     conviction=conviction,
                     dte=dte,
+                    notes=f"otm_pct={otm_pct:.4f};high_reward={self.settings.long_option_high_reward_mode}",
                     ts=now.isoformat(),
                 ))
 
         signals.sort(
-            key=lambda s: (s.conviction, -abs(s.dte - filters.target_dte), -abs(s.strike - spot * (1.0 - filters.target_otm_pct))),
+            key=lambda s: self._directional_sort_key(s, spot, "put", filters),
             reverse=True,
         )
         return signals[:3]
@@ -488,7 +495,8 @@ class Scanner:
 
         for expiry in self._ordered_expiries({c["expiry"] for c in contracts}, filters, now):
             dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
-            target_strike = spot * (1.0 + filters.target_otm_pct)
+            target_otm_pct = self._target_otm_pct(filters.target_otm_pct)
+            target_strike = spot * (1.0 + target_otm_pct)
             eligible = [
                 c for c in contracts
                 if c["expiry"] == expiry and c["type"] == "call"
@@ -527,9 +535,12 @@ class Scanner:
                 spread = ask - bid
                 spread_pct = spread / max(mid, 0.01)
 
-                # Skip contracts with absurdly wide spreads (>50%) — never trade
-                # a wide-spread option, the slippage alone will eat our gains.
-                if spread_pct > 0.50:
+                # Skip wide-spread options; high-reward mode is stricter because
+                # farther OTM contracts can look cheap while being untradeable.
+                if spread_pct > self._max_long_option_spread_pct():
+                    continue
+                otm_pct = self._otm_pct("call", c["strike"], spot)
+                if otm_pct <= 0:
                     continue
 
                 conviction = compute_conviction(
@@ -546,6 +557,8 @@ class Scanner:
                 entry_price = round(mid + 0.25 * spread, 2)
                 if entry_price * 100 > self.settings.max_contract_dollar:
                     continue
+                if entry_price < self._min_long_option_premium():
+                    continue
 
                 signals.append(LongCallSignal(
                     symbol=c["symbol"],
@@ -558,15 +571,54 @@ class Scanner:
                     conviction=conviction,
                     dte=dte,
                     strategy_id="long_call",
+                    notes=f"otm_pct={otm_pct:.4f};high_reward={self.settings.long_option_high_reward_mode}",
                     ts=now.isoformat(),
                 ))
 
         # Keep top N by conviction, tie-breaking toward target DTE and OTM strike.
         signals.sort(
-            key=lambda s: (s.conviction, -abs(s.dte - filters.target_dte), -abs(s.strike - spot * (1.0 + filters.target_otm_pct))),
+            key=lambda s: self._directional_sort_key(s, spot, "call", filters),
             reverse=True,
         )
         return signals[:3]
+
+    def _target_otm_pct(self, base_target: float) -> float:
+        if not self.settings.long_option_high_reward_mode:
+            return base_target
+        ladder = tuple(p for p in self.settings.long_option_otm_ladder_pct if p > 0)
+        return max(ladder) if ladder else base_target
+
+    def _min_long_option_premium(self) -> float:
+        return self.settings.long_option_min_premium if self.settings.long_option_high_reward_mode else 0.0
+
+    def _max_long_option_spread_pct(self) -> float:
+        return self.settings.long_option_max_spread_pct if self.settings.long_option_high_reward_mode else 0.50
+
+    @staticmethod
+    def _otm_pct(side: Literal["call", "put"], strike: float, spot: float) -> float:
+        if spot <= 0:
+            return 0.0
+        if side == "call":
+            return (strike - spot) / spot
+        return (spot - strike) / spot
+
+    def _directional_sort_key(
+        self,
+        signal: LongCallSignal | LongPutSignal,
+        spot: float,
+        side: Literal["call", "put"],
+        filters,
+    ) -> tuple[float, int, float]:
+        otm_pct = max(self._otm_pct(side, signal.strike, spot), 0.0)
+        target_otm = max(self._target_otm_pct(filters.target_otm_pct), 0.0001)
+        convexity_bonus = 0.0
+        if self.settings.long_option_high_reward_mode:
+            convexity_bonus = min(otm_pct / target_otm, 1.0) * self.settings.long_option_convexity_weight
+        return (
+            signal.conviction + convexity_bonus,
+            -abs(signal.dte - filters.target_dte),
+            -abs(otm_pct - target_otm),
+        )
 
     def _ordered_expiries(self, expiries: set[str], filters, now: datetime) -> list[str]:
         """Allowed expiries ordered by closeness to target DTE, then sooner.

@@ -167,6 +167,9 @@ class Executor:
                     if signal.strategy_id == "long_call"
                     else self.settings.long_put_target_otm_pct
                 ),
+                "high_reward_mode": self.settings.long_option_high_reward_mode,
+                "otm_ladder_pct": list(self.settings.long_option_otm_ladder_pct),
+                "signal_notes": signal.notes,
             },
         )
         written = self.journal.append(event)

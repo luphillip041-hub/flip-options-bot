@@ -54,6 +54,16 @@ def _coerce_bool(env: dict[str, str], key: str, default: bool) -> bool:
     return raw.strip().lower() in ("true", "1", "yes", "y", "on")
 
 
+def _coerce_float_tuple(
+    env: dict[str, str], key: str, default: tuple[float, ...]
+) -> tuple[float, ...]:
+    raw = env.get(key)
+    if raw is None or raw.strip() == "":
+        return default
+    values = tuple(float(part.strip()) for part in raw.split(",") if part.strip())
+    return values or default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Immutable settings object. Construct via `Settings.from_env()`."""
@@ -131,6 +141,15 @@ class Settings:
     # OTM puts are the bearish high-convexity vehicle. For puts, OTM means
     # below spot by this fraction.
     long_put_target_otm_pct: float = 0.003
+
+    # ===== High-risk / high-reward long-premium mode =====
+    # When enabled, directional scans prefer farther OTM contracts from this
+    # ladder while still requiring real bid/ask liquidity and contract caps.
+    long_option_high_reward_mode: bool = False
+    long_option_otm_ladder_pct: tuple[float, ...] = (0.003, 0.006, 0.010, 0.015)
+    long_option_min_premium: float = 0.15
+    long_option_max_spread_pct: float = 0.35
+    long_option_convexity_weight: float = 0.15
 
     # ===== Long Equity fallback =====
     # Bullish long exposure when call premiums are too expensive or chains are
@@ -286,6 +305,21 @@ class Settings:
             ),
             long_put_target_otm_pct=_coerce_float(
                 merged, "FOB_LONG_PUT_TARGET_OTM_PCT", 0.003
+            ),
+            long_option_high_reward_mode=_coerce_bool(
+                merged, "FOB_LONG_OPTION_HIGH_REWARD_MODE", False
+            ),
+            long_option_otm_ladder_pct=_coerce_float_tuple(
+                merged, "FOB_LONG_OPTION_OTM_LADDER_PCT", (0.003, 0.006, 0.010, 0.015)
+            ),
+            long_option_min_premium=_coerce_float(
+                merged, "FOB_LONG_OPTION_MIN_PREMIUM", 0.15
+            ),
+            long_option_max_spread_pct=_coerce_float(
+                merged, "FOB_LONG_OPTION_MAX_SPREAD_PCT", 0.35
+            ),
+            long_option_convexity_weight=_coerce_float(
+                merged, "FOB_LONG_OPTION_CONVEXITY_WEIGHT", 0.15
             ),
             long_equity_enabled=_coerce_bool(merged, "FOB_LONG_EQUITY_ENABLED", False),
             long_equity_min_direction_move_pct=_coerce_float(
