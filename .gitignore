@@ -53,6 +53,5 @@ runs/*.db
 *.crt
 
 # Local-only data
-runs/backtests/*.parquet
-runs/backtests/*.csv
+runs/backtests/**
 !runs/backtests/.gitkeep
