@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Protocol, cast
+from zoneinfo import ZoneInfo
 
 from ..broker import BrokerClient
 from ..config import Settings
@@ -55,6 +56,7 @@ from ..strategies.long_equity import (
 )
 
 log = logging.getLogger("flip_options_bot.scanner")
+ET = ZoneInfo("America/New_York")
 
 
 class YFinanceProvider(Protocol):
@@ -676,11 +678,22 @@ class Scanner:
             tags.append("yf_quote=last_price_proxy_non_executable")
             if quote.last_price is not None:
                 tags.append(f"yf_last={quote.last_price:.2f}")
+            if quote.last_trade_date:
+                tags.append(f"yf_last_trade={self._trade_date_tag(quote.last_trade_date)}")
             # Last price is not a fillable quote. It can still provide a tiny
-            # research/ranking nudge for 1DTE+ if volume says the contract is active.
-            if (quote.volume or 0) >= self.settings.yfinance_min_volume:
+            # research/ranking nudge for 1DTE+ if volume says the contract is active
+            # AND the row traded in today's ET session. This prevents stale/yesterday
+            # Yahoo volume from improving high-risk candidate ranking pre-open.
+            volume_ok = (quote.volume or 0) >= self.settings.yfinance_min_volume
+            fresh_volume_ok = (
+                not self.settings.yfinance_require_current_trade_date_for_volume_bonus
+                or self._yfinance_last_trade_is_signal_date(quote, signal)
+            )
+            if volume_ok and fresh_volume_ok:
                 bonus += self.settings.yfinance_volume_bonus
                 tags.append("yf_confirm=volume_only")
+            elif volume_ok:
+                tags.append("yf_confirm=stale_volume_no_bonus")
             elif self.settings.yfinance_strict_gate:
                 log.info("%s rejected by yfinance strict missing bid/ask", signal.symbol)
                 return None
@@ -697,6 +710,33 @@ class Scanner:
             conviction=min(1.0, signal.conviction + bonus),
             notes=";".join([signal.notes, *tags]),
         )
+
+    @staticmethod
+    def _trade_date_tag(raw: str) -> str:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(ET).date().isoformat()
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _signal_et_date(signal: LongCallSignal | LongPutSignal) -> str:
+        try:
+            dt = datetime.fromisoformat(signal.ts.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(ET).date().isoformat()
+        except Exception:
+            return datetime.now(ET).date().isoformat()
+
+    def _yfinance_last_trade_is_signal_date(
+        self, quote: YFinanceOptionQuote, signal: LongCallSignal | LongPutSignal
+    ) -> bool:
+        if not quote.last_trade_date:
+            return False
+        return self._trade_date_tag(quote.last_trade_date) == self._signal_et_date(signal)
 
     def _yfinance_missing(
         self, signal: LongCallSignal | LongPutSignal

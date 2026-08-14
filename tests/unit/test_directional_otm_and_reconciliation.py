@@ -416,6 +416,7 @@ def test_yfinance_confirmation_applies_through_14dte_max(tmp_path: Path):
     provider = FakeYFinanceProvider(YFinanceOptionQuote(
         contract_symbol="SPY260828C00103500",
         last_price=1.03,
+        last_trade_date=datetime.now(timezone.utc).isoformat(),
         volume=500,
     ))
 
@@ -428,6 +429,44 @@ def test_yfinance_confirmation_applies_through_14dte_max(tmp_path: Path):
     assert provider.calls == [("SPY", expiry, "SPY260828C00103500")]
     assert "yf_confirm=volume_only" in sig.notes
     assert "yf_quote=last_price_proxy_non_executable" in sig.notes
+
+
+def test_yfinance_stale_volume_does_not_boost_candidate(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_put_enabled=False,
+        long_equity_enabled=False,
+        min_dte=1,
+        target_dte=1,
+        max_dte=14,
+        yfinance_confirm_1dte_enabled=True,
+        yfinance_confirm_min_dte=1,
+        yfinance_volume_bonus=0.03,
+        yfinance_require_current_trade_date_for_volume_bonus=True,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    expiry = (datetime.now(timezone.utc).date() + timedelta(days=1)).strftime("%Y-%m-%d")
+    contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    broker.list_option_contracts.return_value = contracts
+    broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
+    baseline = Scanner(settings, broker, FunnelRecorder(tmp_path / "base"), yfinance_provider=FakeYFinanceProvider(None)).scan(["SPY"]).candidates[0]
+    provider = FakeYFinanceProvider(YFinanceOptionQuote(
+        contract_symbol="SPY260815C00103500",
+        last_price=1.03,
+        last_trade_date="2026-08-13T16:57:05+00:00",
+        volume=500,
+    ))
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(["SPY"])
+
+    assert result.candidates
+    sig = result.candidates[0]
+    assert sig.conviction == baseline.conviction
+    assert "yf_confirm=stale_volume_no_bonus" in sig.notes
+    assert "yf_confirm=volume_only" not in sig.notes
+    assert "yf_last_trade=2026-08-13" in sig.notes
 
 
 def test_yfinance_strict_gate_rejects_wide_1dte_quote(tmp_path: Path):

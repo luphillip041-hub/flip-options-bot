@@ -165,6 +165,10 @@ class Settings:
     yfinance_max_spread_pct: float = 0.35
     yfinance_bidask_bonus: float = 0.03
     yfinance_volume_bonus: float = 0.01
+    # Last-price/volume-only Yahoo rows are non-executable. Require the row's
+    # last trade date to match today's ET session before using volume as even a
+    # tiny ranking nudge; stale rows still get logged in notes.
+    yfinance_require_current_trade_date_for_volume_bonus: bool = True
 
     # ===== Long Equity fallback =====
     # Bullish long exposure when call premiums are too expensive or chains are
@@ -346,6 +350,9 @@ class Settings:
             yfinance_max_spread_pct=_coerce_float(merged, "FOB_YFINANCE_MAX_SPREAD_PCT", 0.35),
             yfinance_bidask_bonus=_coerce_float(merged, "FOB_YFINANCE_BIDASK_BONUS", 0.03),
             yfinance_volume_bonus=_coerce_float(merged, "FOB_YFINANCE_VOLUME_BONUS", 0.01),
+            yfinance_require_current_trade_date_for_volume_bonus=_coerce_bool(
+                merged, "FOB_YFINANCE_REQUIRE_CURRENT_TRADE_DATE_FOR_VOLUME_BONUS", True
+            ),
             long_equity_enabled=_coerce_bool(merged, "FOB_LONG_EQUITY_ENABLED", False),
             long_equity_min_direction_move_pct=_coerce_float(
                 merged, "FOB_LONG_EQUITY_MIN_DIRECTION_MOVE_PCT", 0.0010

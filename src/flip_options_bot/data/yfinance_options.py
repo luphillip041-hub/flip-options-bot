@@ -19,6 +19,7 @@ class YFinanceOptionQuote:
     bid: float | None = None
     ask: float | None = None
     last_price: float | None = None
+    last_trade_date: str | None = None
     volume: int | None = None
     open_interest: int | None = None
     implied_volatility: float | None = None
@@ -72,6 +73,18 @@ def _int_or_none(value) -> int | None:
         return None
 
 
+def _iso_or_none(value) -> str | None:
+    try:
+        if value is None or value != value:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        text = str(value).strip()
+        return text or None
+    except Exception:
+        return None
+
+
 class YFinanceOptionChainProvider:
     """Fetch current/delayed Yahoo option-chain rows by OCC contract symbol.
 
@@ -114,6 +127,7 @@ class YFinanceOptionChainProvider:
                     bid=_float_or_none(row.get("bid")),
                     ask=_float_or_none(row.get("ask")),
                     last_price=_float_or_none(row.get("lastPrice")),
+                    last_trade_date=_iso_or_none(row.get("lastTradeDate")),
                     volume=_int_or_none(row.get("volume")),
                     open_interest=_int_or_none(row.get("openInterest")),
                     implied_volatility=_float_or_none(row.get("impliedVolatility")),

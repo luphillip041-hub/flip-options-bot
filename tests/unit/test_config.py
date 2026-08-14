@@ -116,6 +116,7 @@ def test_yfinance_confirmation_env(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("FOB_YFINANCE_MAX_SPREAD_PCT", "0.25")
     monkeypatch.setenv("FOB_YFINANCE_BIDASK_BONUS", "0.04")
     monkeypatch.setenv("FOB_YFINANCE_VOLUME_BONUS", "0.015")
+    monkeypatch.setenv("FOB_YFINANCE_REQUIRE_CURRENT_TRADE_DATE_FOR_VOLUME_BONUS", "false")
 
     settings = Settings.from_env()
 
@@ -126,6 +127,7 @@ def test_yfinance_confirmation_env(monkeypatch, tmp_path: Path):
     assert settings.yfinance_max_spread_pct == 0.25
     assert settings.yfinance_bidask_bonus == 0.04
     assert settings.yfinance_volume_bonus == 0.015
+    assert settings.yfinance_require_current_trade_date_for_volume_bonus is False
 
 
 def test_has_paper_creds(monkeypatch, tmp_path: Path):

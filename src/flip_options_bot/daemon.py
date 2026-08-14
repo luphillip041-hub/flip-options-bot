@@ -126,6 +126,7 @@ def run_once(
             "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
             "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
             "yfinance_strict_gate": settings.yfinance_strict_gate,
+            "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
         }
 
     # Step 2: scan
@@ -144,6 +145,7 @@ def run_once(
             "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
             "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
             "yfinance_strict_gate": settings.yfinance_strict_gate,
+            "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
         }
     if not is_entry_window():
         log.info("scan skipped: outside entry window (09:45-15:45 ET)")
@@ -158,6 +160,7 @@ def run_once(
             "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
             "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
             "yfinance_strict_gate": settings.yfinance_strict_gate,
+            "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
         }
     result = scanner.scan(watchlist)
     log.info("scan %s: watchlist=%d candidates=%d skip=%s",
@@ -238,6 +241,7 @@ def run_once(
         "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
         "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
         "yfinance_strict_gate": settings.yfinance_strict_gate,
+        "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
         "submitted_count": submitted,
         "reconciled": n_reconciled,
         "denied": reasons[:5],
@@ -293,10 +297,11 @@ def main() -> int:
                  settings.long_option_high_reward_mode,
                  settings.long_option_otm_ladder_pct,
                  settings.max_contract_dollar)
-        log.info("  yfinance_1dte_confirm=%s min_dte=%s strict=%s",
+        log.info("  yfinance_1dte_confirm=%s min_dte=%s strict=%s current_trade_date_volume_bonus=%s",
                  settings.yfinance_confirm_1dte_enabled,
                  settings.yfinance_confirm_min_dte,
-                 settings.yfinance_strict_gate)
+                 settings.yfinance_strict_gate,
+                 settings.yfinance_require_current_trade_date_for_volume_bonus)
         log.info("  strategies enabled: %s",
                  [s.strategy_id for s in enabled_strategies(settings)])
         return 0
