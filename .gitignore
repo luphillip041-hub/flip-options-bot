@@ -54,4 +54,5 @@ runs/*.db
 
 # Local-only data
 runs/backtests/**
+runs/yfinance_chain_snapshots/**
 !runs/backtests/.gitkeep
