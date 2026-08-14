@@ -15,6 +15,7 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
         "FOB_PHASE",
         "LIVETRADE_ENABLED",
         "FOB_MAX_POSITIONS",
+        "FOB_MAX_SUBMISSIONS_PER_SCAN",
         "FOB_PER_TRADE_RISK_PCT",
         "FOB_LONG_OPTION_HIGH_REWARD_MODE",
         "FOB_LONG_OPTION_OTM_LADDER_PCT",
@@ -34,11 +35,13 @@ def test_settings_overrides_via_env(monkeypatch):
     monkeypatch.setenv("FOB_PHASE", "live")
     monkeypatch.setenv("LIVETRADE_ENABLED", "true")
     monkeypatch.setenv("FOB_MAX_POSITIONS", "5")
+    monkeypatch.setenv("FOB_MAX_SUBMISSIONS_PER_SCAN", "4")
     monkeypatch.setenv("FOB_PER_TRADE_RISK_PCT", "3.5")
     settings = Settings.from_env()
     assert settings.phase == "live"
     assert settings.live_trade_enabled is True
     assert settings.max_positions == 5
+    assert settings.max_submissions_per_scan == 4
     assert settings.per_trade_risk_pct == 3.5
 
 

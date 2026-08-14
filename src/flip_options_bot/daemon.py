@@ -37,7 +37,13 @@ from .strategies.long_equity import LongEquitySignal
 
 log = logging.getLogger("flip_options_bot.daemon")
 
-DEFAULT_WATCHLIST = ["SPY", "QQQ", "IWM", "DIA"]
+# Liquid option underlyings only: broad ETFs plus mega-cap names with deep chains.
+# This is the default paper-forward universe; operators can still override via
+# FOB_WATCHLIST for narrower studies.
+DEFAULT_WATCHLIST = [
+    "SPY", "QQQ", "IWM", "DIA", "TLT", "XLF", "XLE", "XLK", "SMH",
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "AMD",
+]
 
 
 def setup_logging(run_dir: Path) -> None:
@@ -69,6 +75,26 @@ def write_heartbeat(settings: Settings, status: dict) -> None:
         "status": status,
     }
     path.write_text(json.dumps(payload, indent=2))
+
+
+def _candidate_quality_key(sig: LongCallSignal | LongPutSignal | LongEquitySignal, settings: Settings) -> tuple[float, int, float]:
+    """Global submission ordering: quality first, then preferred DTE.
+
+    Scanner does per-underlying chain quality and OTM sorting; daemon uses this
+    to avoid static watchlist order crowding out stronger later symbols.
+    """
+    conviction = float(getattr(sig, "conviction", 0.0))
+    dte = int(getattr(sig, "dte", settings.target_dte))
+    high_reward_bonus = 0.05 if settings.long_option_high_reward_mode else 0.0
+    option_bonus = high_reward_bonus if getattr(sig, "strategy_id", "") in {"long_call", "long_put"} else 0.0
+    return (conviction + option_bonus, -abs(dte - settings.target_dte), -dte)
+
+
+def _rank_directional_candidates(
+    candidates: list[LongCallSignal | LongPutSignal | LongEquitySignal],
+    settings: Settings,
+) -> list[LongCallSignal | LongPutSignal | LongEquitySignal]:
+    return sorted(candidates, key=lambda sig: _candidate_quality_key(sig, settings), reverse=True)
 
 
 def run_once(
@@ -148,7 +174,12 @@ def run_once(
 
     submitted = 0
     reasons: list[str] = []
-    for sig in result.candidates:
+    max_submissions = max(1, settings.max_submissions_per_scan)
+    ranked_candidates = _rank_directional_candidates(result.candidates, settings)
+    for sig in ranked_candidates:
+        if submitted >= max_submissions:
+            reasons.append(f"scan_submission_cap:{submitted}/{max_submissions}")
+            break
         # Reload state inside the loop because record_open mutates open_position_count
         fresh_state = risk.load_state()
         if sig.strategy_id == "long_equity":
@@ -168,6 +199,9 @@ def run_once(
     # Step 3b: gate each BPCS candidate
     if bpcs_result is not None:
         for sig in bpcs_result.candidates:
+            if submitted >= max_submissions:
+                reasons.append(f"scan_submission_cap:{submitted}/{max_submissions}")
+                break
             fresh_state = risk.load_state()
             exec_result = executor.submit_bull_put_spread(
                 sig, equity=equity, state=fresh_state,
@@ -190,6 +224,8 @@ def run_once(
         "chains_fetched": len(result.funnel_row.chains_fetched),
         "chains_failed": len(result.funnel_row.chains_failed),
         "raw_signal_count": result.funnel_row.raw_signal_count,
+        "ranked_candidate_count": len(ranked_candidates),
+        "max_submissions_per_scan": max_submissions,
         "submitted_count": submitted,
         "reconciled": n_reconciled,
         "denied": reasons[:5],
@@ -239,6 +275,12 @@ def main() -> int:
                  "set" if settings.has_live_creds() else "MISSING")
         log.info("  run_dir=%s, dashboard_port=%s",
                  settings.run_dir, settings.dashboard_port)
+        log.info("  throughput: max_positions=%s, max_submissions_per_scan=%s, scan_interval=%ss",
+                 settings.max_positions, settings.max_submissions_per_scan, settings.scan_interval_s)
+        log.info("  high_reward=%s ladder=%s max_contract=$%s",
+                 settings.long_option_high_reward_mode,
+                 settings.long_option_otm_ladder_pct,
+                 settings.max_contract_dollar)
         log.info("  strategies enabled: %s",
                  [s.strategy_id for s in enabled_strategies(settings)])
         return 0

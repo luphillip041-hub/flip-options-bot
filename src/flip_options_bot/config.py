@@ -85,6 +85,10 @@ class Settings:
     daily_loss_cap_pct: float = 6.0
     weekly_loss_cap_pct: float = 12.0
     max_contract_dollar: int = 500
+    # Throughput control: submit the best N ranked candidates per scan. Keep
+    # this separate from max_positions so a bigger book does not become an
+    # uncontrolled one-tick order storm.
+    max_submissions_per_scan: int = 3
 
     # Directional options: prefer 0DTE gamma, but allow up to two weeks when
     # same-day chains are too expensive/illiquid or no clean setup exists.
@@ -247,6 +251,7 @@ class Settings:
             daily_loss_cap_pct=_coerce_float(merged, "FOB_DAILY_LOSS_CAP_PCT", 6.0),
             weekly_loss_cap_pct=_coerce_float(merged, "FOB_WEEKLY_LOSS_CAP_PCT", 12.0),
             max_contract_dollar=_coerce_int(merged, "FOB_MAX_CONTRACT_DOLLAR", 500),
+            max_submissions_per_scan=_coerce_int(merged, "FOB_MAX_SUBMISSIONS_PER_SCAN", 3),
             min_dte=_coerce_int(merged, "FOB_MIN_DTE", 0),
             target_dte=_coerce_int(merged, "FOB_TARGET_DTE", 0),
             max_dte=_coerce_int(merged, "FOB_MAX_DTE", 14),
