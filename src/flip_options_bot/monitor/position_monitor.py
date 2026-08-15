@@ -42,7 +42,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 
 from ..broker import BrokerClient
 from ..config import Settings
@@ -224,11 +224,11 @@ class PositionMonitor:
         return result
 
     def _pending_close_symbols(self) -> set[str]:
-        """Return symbols that already have a bot-owned SELL close order working.
+        """Return symbols that already have a bot-owned close order working.
 
-        A `close_attempt` keeps the journal position open until broker fill.
-        Without this guard, the monitor can submit a duplicate SELL every tick
-        while the first close limit is still resting.
+        `PENDING_CANCEL` is not a working close forever. Friday's stale exits can
+        otherwise freeze Monday repricing because the broker still returns them
+        in open orders while the journal still has `close_attempt` rows.
         """
         try:
             orders = self.broker.list_open_orders()
@@ -240,30 +240,50 @@ class PositionMonitor:
             coid = str(getattr(order, "client_order_id", "") or "")
             side = str(getattr(order, "side", "") or "").upper()
             symbol = str(getattr(order, "symbol", "") or "")
+            status = str(getattr(order, "status", "") or "").upper()
+            if not symbol or self._is_stale_cancel_pending_order(order, status):
+                continue
             if (
                 coid.startswith("close-")
                 and not coid.startswith("close-spread-")
                 and side.endswith("SELL")
-                and symbol
             ):
                 symbols.add(symbol)
-            elif coid.startswith("close-spread-") and symbol:
+            elif coid.startswith("close-spread-"):
                 symbols.add(symbol)
         symbols.update(self._journal_pending_close_symbols())
         return symbols
 
-    def _journal_pending_close_symbols(self) -> set[str]:
-        """Fallback duplicate-close guard when broker open-order lookup fails.
+    def _is_stale_cancel_pending_order(self, order, status: str) -> bool:
+        if "PENDING_CANCEL" not in status:
+            return False
+        submitted = getattr(order, "submitted_at", None)
+        if submitted is None:
+            return False
+        if isinstance(submitted, str):
+            try:
+                submitted = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+        if getattr(submitted, "tzinfo", None) is None:
+            submitted = submitted.replace(tzinfo=UTC)
+        grace_s = max(300, int(self.settings.position_monitor_interval_s) * 3)
+        return (datetime.now(UTC) - submitted.astimezone(UTC)).total_seconds() > grace_s
 
-        Broker order truth is preferred because journal close_attempt rows can go
-        stale after cancels. But if broker inspection itself fails, assume recent
-        close_attempt rows are still live for this tick and fail closed.
+    def _journal_pending_close_symbols(self) -> set[str]:
+        """Fallback duplicate-close guard when broker order truth is unavailable.
+
+        Only recent attempts block. Old journal intents are stale by definition;
+        if they still blocked after cancel-pending, the monitor would never
+        reprice Monday exits.
         """
+        cutoff_s = max(300, int(self.settings.position_monitor_interval_s) * 3)
+        cutoff = datetime.now(UTC).timestamp() - cutoff_s
         try:
             with sqlite3.connect(self.journal.db_path) as conn:
                 rows = conn.execute(
                     """
-                    SELECT DISTINCT symbol FROM trades
+                    SELECT DISTINCT symbol, ts FROM trades
                     WHERE kind IN ('close_attempt', 'close_spread_attempt')
                       AND symbol IS NOT NULL
                       AND symbol != ''
@@ -272,7 +292,17 @@ class PositionMonitor:
         except Exception as exc:
             log.warning("could not inspect journal close attempts: %s", exc)
             return set()
-        return {str(row[0]) for row in rows if row and row[0]}
+        symbols: set[str] = set()
+        for symbol, ts_raw in rows:
+            try:
+                ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            if ts.timestamp() >= cutoff:
+                symbols.add(str(symbol))
+        return symbols
 
     def _evaluate_long_equity_position(
         self,

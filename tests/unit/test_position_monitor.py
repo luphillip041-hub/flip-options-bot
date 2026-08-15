@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 from flip_options_bot.config import Settings
 from flip_options_bot.execution import Closer
 from flip_options_bot.execution.executor import ExecutionResult
-from flip_options_bot.journal import Journal
+from flip_options_bot.journal import Journal, TradeEvent
 from flip_options_bot.monitor.position_monitor import PositionMonitor
 from flip_options_bot.risk import RiskState
 
@@ -124,7 +124,7 @@ def test_broker_open_order_failure_uses_journal_close_attempt_guard(tmp_path: Pa
     journal.append(
         TradeEvent(
             event_id="close-existing",
-            ts="2026-08-11T15:01:00+00:00",
+            ts=Journal.now_iso(),
             kind="close_attempt",
             symbol=symbol,
             side="sell",
@@ -449,3 +449,71 @@ def test_exit_price_floor_is_5_cents(tmp_path: Path):
     monitor, _, _ = _wire_monitor(tmp_path)
     p = monitor._exit_price("sl", mark=0.01, avg_entry=1.00)
     assert p == 0.05
+
+
+def test_stale_pending_cancel_close_order_does_not_block_reprice(tmp_path: Path):
+    """Friday PENDING_CANCEL close orders must not freeze Monday repricing forever."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    monitor, journal, closer = _wire_monitor(tmp_path)
+    symbol = "XLK260821C00192000"
+    pos_id = _open_position(journal, symbol, qty=1, avg_entry=1.41, peak_mark=1.41)
+    journal.append(
+        TradeEvent(
+            event_id="close-old-pending-cancel",
+            ts=(datetime.now(UTC) - timedelta(hours=12)).isoformat(),
+            kind="close_attempt",
+            symbol=symbol,
+            side="sell",
+            qty=1,
+            price=1.47,
+            position_id=pos_id,
+            raw_broker_fill={"close_position_id": pos_id},
+        )
+    )
+    monitor.broker.list_open_orders = MagicMock(
+        return_value=[
+            SimpleNamespace(
+                client_order_id="close-old-pending-cancel",
+                side="sell",
+                symbol=symbol,
+                status="PENDING_CANCEL",
+                submitted_at=datetime.now(UTC) - timedelta(hours=12),
+            )
+        ]
+    )
+    monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=0.70, ask=0.70))
+
+    tick = monitor.tick(RiskState())
+
+    assert tick.closes_triggered == 1
+    closer.flatten_position.assert_called_once()
+
+
+def test_recent_close_attempt_still_blocks_duplicate_close(tmp_path: Path):
+    from datetime import UTC, datetime
+
+    monitor, journal, closer = _wire_monitor(tmp_path)
+    symbol = "XLK260821C00192000"
+    pos_id = _open_position(journal, symbol, qty=1, avg_entry=1.41, peak_mark=1.41)
+    journal.append(
+        TradeEvent(
+            event_id="close-recent",
+            ts=datetime.now(UTC).isoformat(),
+            kind="close_attempt",
+            symbol=symbol,
+            side="sell",
+            qty=1,
+            price=1.47,
+            position_id=pos_id,
+            raw_broker_fill={"close_position_id": pos_id},
+        )
+    )
+    monitor.broker.list_open_orders = MagicMock(side_effect=RuntimeError("broker unavailable"))
+    monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=0.70, ask=0.70))
+
+    tick = monitor.tick(RiskState())
+
+    assert tick.closes_triggered == 0
+    closer.flatten_position.assert_not_called()
