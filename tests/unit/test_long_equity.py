@@ -33,14 +33,16 @@ def _bars(start=100.0, step=0.05, n=60):
     base = datetime.now(UTC) - timedelta(minutes=n - 1)
     for i in range(n):
         c = start + i * step
-        out.append({
-            "t": (base + timedelta(minutes=i)).isoformat(),
-            "o": c - 0.02,
-            "h": c + 0.05,
-            "l": c - 0.05,
-            "c": c,
-            "v": 1000,
-        })
+        out.append(
+            {
+                "t": (base + timedelta(minutes=i)).isoformat(),
+                "o": c - 0.02,
+                "h": c + 0.05,
+                "l": c - 0.05,
+                "c": c,
+                "v": 1000,
+            }
+        )
     return out
 
 
@@ -116,17 +118,19 @@ def test_monitor_closes_long_equity_at_take_profit(tmp_path: Path):
     closer.flatten_position.return_value = MagicMock(accepted=True)
     monitor = PositionMonitor(settings, broker, journal, risk, closer)
     pid = journal.new_position_id()
-    journal.append(TradeEvent(
-        event_id="long-equity-open",
-        ts=datetime.now(UTC).isoformat(),
-        kind="open",
-        symbol="SPY",
-        side="buy",
-        qty=4,
-        price=100.0,
-        position_id=pid,
-        strategy_id="long_equity",
-    ))
+    journal.append(
+        TradeEvent(
+            event_id="long-equity-open",
+            ts=datetime.now(UTC).isoformat(),
+            kind="open",
+            symbol="SPY",
+            side="buy",
+            qty=4,
+            price=100.0,
+            position_id=pid,
+            strategy_id="long_equity",
+        )
+    )
     journal.set_bracket(
         position_id=pid,
         tp_order_id=None,

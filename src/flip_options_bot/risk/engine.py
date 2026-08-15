@@ -145,7 +145,9 @@ class RiskEngine:
             )
             conn.commit()
 
-    def record_event(self, event_id: str, kind: str, pnl: float | None = None, payload: str = "") -> None:
+    def record_event(
+        self, event_id: str, kind: str, pnl: float | None = None, payload: str = ""
+    ) -> None:
         """Idempotent event log. INSERT OR IGNORE on event_id prevents dup-writes
         from a stuck reconcile loop. This is the structural fix for the
         'duplicate close events' artifact class that produced the -$43k phantom
@@ -215,16 +217,12 @@ class RiskEngine:
         weekly_cap = equity * (self.settings.weekly_loss_cap_pct / 100.0)
         if state.daily_pnl <= -daily_cap:
             state.kill_switch = True
-            state.kill_reason = (
-                f"daily_loss_cap: {state.daily_pnl:.2f} <= -{daily_cap:.2f}"
-            )
+            state.kill_reason = f"daily_loss_cap: {state.daily_pnl:.2f} <= -{daily_cap:.2f}"
             self._persist_state(state)
             return True
         if state.weekly_pnl <= -weekly_cap:
             state.kill_switch = True
-            state.kill_reason = (
-                f"weekly_loss_cap: {state.weekly_pnl:.2f} <= -{weekly_cap:.2f}"
-            )
+            state.kill_reason = f"weekly_loss_cap: {state.weekly_pnl:.2f} <= -{weekly_cap:.2f}"
             self._persist_state(state)
             return True
         return False
@@ -289,8 +287,7 @@ class RiskEngine:
             return self.Decision(
                 allowed=False,
                 reason=(
-                    f"max_positions: {state.open_position_count} >= "
-                    f"{self.settings.max_positions}"
+                    f"max_positions: {state.open_position_count} >= {self.settings.max_positions}"
                 ),
             )
 
@@ -344,8 +341,7 @@ class RiskEngine:
             return self.Decision(
                 allowed=False,
                 reason=(
-                    f"max_positions: {state.open_position_count} >= "
-                    f"{self.settings.max_positions}"
+                    f"max_positions: {state.open_position_count} >= {self.settings.max_positions}"
                 ),
             )
         return self.Decision(allowed=True, contracts=1)
@@ -414,8 +410,7 @@ class RiskEngine:
             return self.Decision(
                 allowed=False,
                 reason=(
-                    f"max_positions: {state.open_position_count} >= "
-                    f"{self.settings.max_positions}"
+                    f"max_positions: {state.open_position_count} >= {self.settings.max_positions}"
                 ),
             )
 
@@ -446,7 +441,9 @@ class RiskEngine:
         state.open_position_count += 1
         state.updated_at = datetime.now(UTC).isoformat()
         self._persist_state(state)
-        self.record_event(event_id, "open_spread", pnl=0.0, payload=f"{symbol}|max_loss={max_loss:.2f}")
+        self.record_event(
+            event_id, "open_spread", pnl=0.0, payload=f"{symbol}|max_loss={max_loss:.2f}"
+        )
         return state
 
     def record_close(

@@ -32,6 +32,7 @@ from flip_options_bot.strategies.orb import (
 
 # ===== ORB =====
 
+
 def test_orb_compute_opening_range_basic():
     bars = [{"h": 100 + i * 0.1, "l": 100 - i * 0.1, "t": None} for i in range(30)]
     or_ = compute_opening_range(bars)
@@ -43,6 +44,7 @@ def test_orb_compute_opening_range_basic():
 def test_orb_compute_opening_range_filters_et_time():
     """Bars outside 09:30-10:00 ET should be ignored."""
     from datetime import timedelta
+
     base = datetime(2026, 8, 12, 13, 0, tzinfo=UTC)  # 09:00 ET
     bars = []
     for i in range(60):
@@ -76,23 +78,30 @@ def test_orb_no_breakout_inside_range():
 
 def test_orb_boost_aligned():
     """ORB long + trade long → boost."""
-    adjusted = apply_orb_boost(base_conviction=0.6, orb_direction="long", orb_strength=0.7, trade_direction="long")
+    adjusted = apply_orb_boost(
+        base_conviction=0.6, orb_direction="long", orb_strength=0.7, trade_direction="long"
+    )
     assert adjusted > 0.6
 
 
 def test_orb_boost_contradicted():
     """ORB short + trade long → penalize."""
-    adjusted = apply_orb_boost(base_conviction=0.6, orb_direction="short", orb_strength=0.7, trade_direction="long")
+    adjusted = apply_orb_boost(
+        base_conviction=0.6, orb_direction="short", orb_strength=0.7, trade_direction="long"
+    )
     assert adjusted < 0.6
 
 
 def test_orb_boost_none():
     """ORB no signal → no change."""
-    adjusted = apply_orb_boost(base_conviction=0.6, orb_direction="none", orb_strength=0.5, trade_direction="long")
+    adjusted = apply_orb_boost(
+        base_conviction=0.6, orb_direction="none", orb_strength=0.5, trade_direction="long"
+    )
     assert adjusted == 0.6
 
 
 # ===== IV filter =====
+
 
 def test_straddle_iv_proxy_normal():
     # call: 1.50/1.55, put: 1.45/1.50, spot: 100
@@ -108,10 +117,10 @@ def test_straddle_iv_proxy_normal():
 
 
 def test_iv_regime_ok_normal():
-    assert iv_regime_ok(0.02) is True   # 2% — normal
-    assert iv_regime_ok(0.005) is True   # at the floor (0.5%)
+    assert iv_regime_ok(0.02) is True  # 2% — normal
+    assert iv_regime_ok(0.005) is True  # at the floor (0.5%)
     assert iv_regime_ok(0.001) is False  # too cheap (below 0.5%)
-    assert iv_regime_ok(0.20) is False   # too rich (above 15%)
+    assert iv_regime_ok(0.20) is False  # too rich (above 15%)
 
 
 def test_iv_regime_boost_rich():
@@ -127,6 +136,7 @@ def test_iv_regime_boost_cheap():
 
 
 # ===== Calendar gate =====
+
 
 def test_is_fomc_day():
     assert is_fomc_day(datetime(2026, 9, 15)) is True
@@ -165,6 +175,7 @@ def test_safe_entry_window_allows_clean_day():
 
 # ===== Position sizing =====
 
+
 def test_size_by_conviction_baseline():
     assert size_by_conviction(0.50) == 1
     assert size_by_conviction(0.70) == 1
@@ -186,23 +197,30 @@ def test_is_strong_setup():
 
 # ===== BPCS =====
 
+
 def test_bpcs_select_strikes():
     short, long = select_strikes(spot=100.0)
     assert short == 98.0  # 2% OTM
-    assert long == 96.0   # 4% OTM
+    assert long == 96.0  # 4% OTM
     assert short > long
 
 
 def test_bpcs_estimate_credit():
-    credit = estimate_credit(short_put_bid=1.50, short_put_ask=1.55, long_put_bid=0.50, long_put_ask=0.55)
+    credit = estimate_credit(
+        short_put_bid=1.50, short_put_ask=1.55, long_put_bid=0.50, long_put_ask=0.55
+    )
     # short_mid = 1.525, long_mid = 0.525, credit ≈ 1.00
     assert credit == pytest.approx(1.00, abs=1e-6)
 
 
 def test_bpcs_conviction_bullish_rich_iv():
     c = compute_bpcs_conviction(
-        spot=100, short_strike=95, long_strike=90,
-        credit=1.5, iv_rank_proxy=0.40, direction_move_pct=0.005,
+        spot=100,
+        short_strike=95,
+        long_strike=90,
+        credit=1.5,
+        iv_rank_proxy=0.40,
+        direction_move_pct=0.005,
     )
     assert c > 0.5
 
@@ -210,17 +228,23 @@ def test_bpcs_conviction_bullish_rich_iv():
 def test_bpcs_conviction_bearish_blocks():
     """Bearish market → BPCS conviction = 0."""
     c = compute_bpcs_conviction(
-        spot=100, short_strike=95, long_strike=90,
-        credit=1.5, iv_rank_proxy=0.40, direction_move_pct=-0.01,
+        spot=100,
+        short_strike=95,
+        long_strike=90,
+        credit=1.5,
+        iv_rank_proxy=0.40,
+        direction_move_pct=-0.01,
     )
     assert c == 0.0
 
 
 # ===== Entry window =====
 
+
 def test_entry_window_morning():
     """10:00-11:30 ET → True."""
     from zoneinfo import ZoneInfo
+
     et = ZoneInfo("America/New_York")
     dt = datetime(2026, 8, 12, 10, 30, tzinfo=et)
     assert is_entry_window(dt) is True
@@ -229,6 +253,7 @@ def test_entry_window_morning():
 def test_entry_window_lunch_lull():
     """12:00 ET → False (lunch lull)."""
     from zoneinfo import ZoneInfo
+
     et = ZoneInfo("America/New_York")
     dt = datetime(2026, 8, 12, 12, 0, tzinfo=et)
     assert is_entry_window(dt) is False
@@ -237,6 +262,7 @@ def test_entry_window_lunch_lull():
 def test_entry_window_afternoon():
     """14:30 ET → True."""
     from zoneinfo import ZoneInfo
+
     et = ZoneInfo("America/New_York")
     dt = datetime(2026, 8, 12, 14, 30, tzinfo=et)
     assert is_entry_window(dt) is True
@@ -245,6 +271,7 @@ def test_entry_window_afternoon():
 def test_entry_window_late():
     """15:45 ET → False (last 30 min)."""
     from zoneinfo import ZoneInfo
+
     et = ZoneInfo("America/New_York")
     dt = datetime(2026, 8, 12, 15, 45, tzinfo=et)
     assert is_entry_window(dt) is False
@@ -253,6 +280,7 @@ def test_entry_window_late():
 def test_entry_window_open_15min():
     """09:30 ET → False (first 15 min, too volatile)."""
     from zoneinfo import ZoneInfo
+
     et = ZoneInfo("America/New_York")
     dt = datetime(2026, 8, 12, 9, 30, tzinfo=et)
     assert is_entry_window(dt) is False
@@ -261,12 +289,14 @@ def test_entry_window_open_15min():
 def test_entry_window_945():
     """09:45 ET → True (start of morning window)."""
     from zoneinfo import ZoneInfo
+
     et = ZoneInfo("America/New_York")
     dt = datetime(2026, 8, 12, 9, 45, tzinfo=et)
     assert is_entry_window(dt) is True
 
 
 # ===== Cross-validation: default FOMC list is non-empty =====
+
 
 def test_fomc_dates_populated():
     assert len(DEFAULT_FOMC_DATES_2026) == 8  # 8 meetings per year

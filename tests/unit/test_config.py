@@ -91,7 +91,13 @@ def test_settings_immutable():
 
 def test_settings_loads_from_dotenv_file(tmp_path: Path, monkeypatch):
     # Clear inherited process env vars so the test isn't polluted by the shell.
-    for k in ("APCA_API_KEY_ID_PAPER", "APCA_API_SECRET_KEY_PAPER", "FOB_PHASE", "LIVETRADE_ENABLED", "FOB_MAX_POSITIONS"):
+    for k in (
+        "APCA_API_KEY_ID_PAPER",
+        "APCA_API_SECRET_KEY_PAPER",
+        "FOB_PHASE",
+        "LIVETRADE_ENABLED",
+        "FOB_MAX_POSITIONS",
+    ):
         monkeypatch.delenv(k, raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text(

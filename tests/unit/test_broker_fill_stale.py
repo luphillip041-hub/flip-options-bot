@@ -33,6 +33,7 @@ def test_list_filled_orders_filters_correctly(tmp_path: Path):
     from datetime import timedelta
 
     from alpaca.trading.enums import AssetClass, OrderStatus
+
     now = datetime.now(UTC)
     old_submitted = datetime(2020, 1, 1, tzinfo=UTC)
     new_submitted = now + timedelta(seconds=10)  # must be > since_ts
@@ -48,9 +49,15 @@ def test_list_filled_orders_filters_correctly(tmp_path: Path):
 
     fake_orders = [
         make_order("SPY260815C00750000", OrderStatus.FILLED, AssetClass.US_OPTION, new_submitted),
-        make_order("SPY260815C00751000", OrderStatus.CANCELED, AssetClass.US_OPTION, new_submitted),  # not filled
-        make_order("SPY", OrderStatus.FILLED, AssetClass.US_EQUITY, new_submitted),  # filled long-equity fallback
-        make_order("SPY260815C00752000", OrderStatus.FILLED, AssetClass.US_OPTION, old_submitted),  # too old
+        make_order(
+            "SPY260815C00751000", OrderStatus.CANCELED, AssetClass.US_OPTION, new_submitted
+        ),  # not filled
+        make_order(
+            "SPY", OrderStatus.FILLED, AssetClass.US_EQUITY, new_submitted
+        ),  # filled long-equity fallback
+        make_order(
+            "SPY260815C00752000", OrderStatus.FILLED, AssetClass.US_OPTION, old_submitted
+        ),  # too old
     ]
     broker.trading = MagicMock()
     broker.trading.get_orders = MagicMock(return_value=fake_orders)
@@ -114,6 +121,7 @@ def test_cancel_stale_orders_cancels_old_only(tmp_path: Path):
     executor.journal = journal
 
     from alpaca.trading.enums import AssetClass, OrderStatus
+
     now = datetime.now(UTC)
     old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=UTC)
     fresh = now
@@ -129,10 +137,12 @@ def test_cancel_stale_orders_cancels_old_only(tmp_path: Path):
         return o
 
     broker.trading = MagicMock()
-    broker.list_open_orders = MagicMock(return_value=[
-        make_order("STALE-1", OrderStatus.ACCEPTED, old),  # 3+ hours old
-        make_order("FRESH-1", OrderStatus.ACCEPTED, fresh),  # <120s
-    ])
+    broker.list_open_orders = MagicMock(
+        return_value=[
+            make_order("STALE-1", OrderStatus.ACCEPTED, old),  # 3+ hours old
+            make_order("FRESH-1", OrderStatus.ACCEPTED, fresh),  # <120s
+        ]
+    )
     broker.cancel_order = MagicMock()
     journal.has_event = MagicMock(return_value=False)
 
@@ -153,6 +163,7 @@ def test_cancel_stale_orders_skips_journaled(tmp_path: Path):
     executor.journal = journal
 
     from alpaca.trading.enums import OrderStatus
+
     old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=UTC)
 
     order = MagicMock()
@@ -164,17 +175,19 @@ def test_cancel_stale_orders_skips_journaled(tmp_path: Path):
 
     broker.list_open_orders = MagicMock(return_value=[order])
     broker.cancel_order = MagicMock()
-    journal.append(TradeEvent(
-        event_id="open-123",
-        ts="2026-08-11T21:59:00+00:00",
-        kind="open",
-        symbol="SPY260815C00750000",
-        side="buy",
-        qty=1,
-        price=1.0,
-        position_id=Journal.new_position_id(),
-        strategy_id="long_call",
-    ))
+    journal.append(
+        TradeEvent(
+            event_id="open-123",
+            ts="2026-08-11T21:59:00+00:00",
+            kind="open",
+            symbol="SPY260815C00750000",
+            side="buy",
+            qty=1,
+            price=1.0,
+            position_id=Journal.new_position_id(),
+            strategy_id="long_call",
+        )
+    )
 
     n = executor.cancel_stale_orders(older_than_seconds=120)
     assert n == 0
@@ -191,6 +204,7 @@ def test_cancel_stale_orders_cancels_stale_close_attempt(tmp_path: Path):
     executor.journal = journal
 
     from alpaca.trading.enums import OrderSide, OrderStatus
+
     old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=UTC)
     coid = "close-123"
 
@@ -202,20 +216,85 @@ def test_cancel_stale_orders_cancels_stale_close_attempt(tmp_path: Path):
     order.client_order_id = coid
     order.submitted_at = old
 
-    journal.append(TradeEvent(
-        event_id=coid,
-        ts="2026-08-11T21:59:00+00:00",
-        kind="close_attempt",
-        symbol="SPY260815C00750000",
-        side="sell",
-        qty=1,
-        price=0.9,
-        position_id=Journal.new_position_id(),
-        raw_broker_fill={"close_position_id": "pos-1"},
-    ))
+    journal.append(
+        TradeEvent(
+            event_id=coid,
+            ts="2026-08-11T21:59:00+00:00",
+            kind="close_attempt",
+            symbol="SPY260815C00750000",
+            side="sell",
+            qty=1,
+            price=0.9,
+            position_id=Journal.new_position_id(),
+            raw_broker_fill={"close_position_id": "pos-1"},
+        )
+    )
     broker.list_open_orders = MagicMock(return_value=[order])
     broker.cancel_order = MagicMock()
 
     n = executor.cancel_stale_orders(older_than_seconds=120)
     assert n == 1
     broker.cancel_order.assert_called_once_with("id-close-123")
+
+
+def test_list_filled_orders_uses_filled_at_for_cutoff(tmp_path: Path):
+    broker = _make_broker()
+    from datetime import timedelta
+
+    from alpaca.trading.enums import AssetClass, OrderStatus
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=1)
+    old_submit_new_fill = MagicMock()
+    old_submit_new_fill.symbol = "SPY260815C00750000"
+    old_submit_new_fill.status = OrderStatus.FILLED
+    old_submit_new_fill.asset_class = AssetClass.US_OPTION
+    old_submit_new_fill.submitted_at = now - timedelta(days=2)
+    old_submit_new_fill.filled_at = now
+    old_submit_new_fill.id = "id-new-fill"
+    broker.trading = MagicMock()
+    broker.trading.get_orders = MagicMock(return_value=[old_submit_new_fill])
+
+    filled = broker.list_filled_orders(since_ts=cutoff)
+
+    assert filled == [old_submit_new_fill]
+
+
+def test_unknown_sell_fill_books_long_option_profit_positive(tmp_path: Path):
+    from flip_options_bot.config import Settings
+
+    settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
+    broker = MagicMock(spec=BrokerClient)
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+    pid = Journal.new_position_id()
+    symbol = "SPY260817P00490000"
+    journal.append(
+        TradeEvent(
+            event_id="open-spy-put",
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol=symbol,
+            side="buy",
+            qty=1,
+            price=1.00,
+            position_id=pid,
+            strategy_id="long_put",
+        )
+    )
+    fill = MagicMock()
+    fill.client_order_id = "external-close-spy-put"
+    fill.filled_avg_price = "1.50"
+    fill.filled_qty = "1"
+    fill.filled_at = "2026-08-13T15:00:00+00:00"
+    fill.id = "external-order-1"
+    fill.status = "FILLED"
+    fill.side = "sell"
+    fill.symbol = symbol
+    broker.list_filled_orders.return_value = [fill]
+
+    assert executor.reconcile_fills() == 1
+    event = journal.get_event("external-close-spy-put")
+    assert event["realized_pnl"] == 50.0
+    assert event["strategy_id"] == "long_put"

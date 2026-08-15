@@ -27,10 +27,7 @@ class YFinanceOptionQuote:
     @property
     def has_bid_ask(self) -> bool:
         return (
-            self.bid is not None
-            and self.ask is not None
-            and self.bid > 0
-            and self.ask > self.bid
+            self.bid is not None and self.ask is not None and self.bid > 0 and self.ask > self.bid
         )
 
     @property

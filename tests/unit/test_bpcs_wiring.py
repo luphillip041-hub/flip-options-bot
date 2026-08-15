@@ -825,7 +825,7 @@ def test_backfills_existing_open_spread_without_position_row(tmp_path: Path):
     assert rows[0]["position_id"] == pid
 
 
-def test_closer_flatten_credit_spread_writes_close_spread(tmp_path: Path):
+def test_closer_flatten_credit_spread_writes_close_spread_attempt(tmp_path: Path):
     settings = Settings(phase="paper", live_trade_enabled=False, run_dir=tmp_path)
     broker = MagicMock(spec=BrokerClient)
     spread_order = MagicMock(id="close-spread-oid", status="ACCEPTED", submitted_at="now")
@@ -849,9 +849,10 @@ def test_closer_flatten_credit_spread_writes_close_spread(tmp_path: Path):
     broker.submit_close_credit_spread.assert_called_once()
     legs = journal.get_legs_for_position(pid)
     assert len(legs) == 1
-    assert legs[0]["kind"] == "close_spread"
+    assert legs[0]["kind"] == "close_spread_attempt"
     assert legs[0]["price"] == pytest.approx(1.0)
-    assert legs[0]["realized_pnl"] == pytest.approx(43.0)
+    assert legs[0]["realized_pnl"] == pytest.approx(0.0)
+    assert journal.get_position_for_id(pid) is None
 
 
 def test_position_monitor_bpcs_tp_closes_atomically(tmp_path: Path):

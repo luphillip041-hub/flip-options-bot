@@ -90,6 +90,53 @@ class BrokerClient:
     def from_settings(cls, settings: Settings) -> BrokerClient:
         return cls(settings)
 
+    def _data_auth_header(self) -> str:
+        import base64
+
+        if self.settings.is_live():
+            cred = (self.settings.alpaca_live_key, self.settings.alpaca_live_secret)
+        else:
+            cred = (self.settings.alpaca_paper_key, self.settings.alpaca_paper_secret)
+        auth = base64.b64encode(f"{cred[0]}:{cred[1]}".encode()).decode()
+        return f"Authorization: Basic {auth}"
+
+    def _curl_json(self, url: str, *, timeout: int = 30) -> dict | None:
+        """Fetch Alpaca data JSON via curl without exposing secrets in argv."""
+        import json as _json
+        import os
+        import subprocess
+        import tempfile
+
+        header_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", prefix="fob-alpaca-header-", delete=False
+            ) as header_file:
+                header_path = header_file.name
+                header_file.write(self._data_auth_header() + "\n")
+            os.chmod(header_path, 0o600)
+            r = subprocess.run(
+                ["curl", "-sS", "-H", f"@{header_path}", url],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            return _json.loads(r.stdout or "{}")
+        finally:
+            if header_path:
+                try:
+                    os.unlink(header_path)
+                except FileNotFoundError:
+                    pass
+
+    @staticmethod
+    def _occ_underlying(contract_symbol: str) -> str:
+        import re
+
+        match = re.match(r"^([A-Z]+)\d{6}[CP]\d{8}$", contract_symbol or "")
+        return match.group(1) if match else ""
+
     # ===== Account =====
 
     def get_account(self, force_refresh: bool = False) -> dict:
@@ -132,10 +179,7 @@ class BrokerClient:
         import json as _json
         import subprocess
 
-        url = (
-            f"{self.settings.alpaca_data_base}/v2/stocks/quotes/latest"
-            f"?symbols={symbol}&feed=iex"
-        )
+        url = f"{self.settings.alpaca_data_base}/v2/stocks/quotes/latest?symbols={symbol}&feed=iex"
         if self.settings.is_live():
             cred = (self.settings.alpaca_live_key, self.settings.alpaca_live_secret)
         else:
@@ -144,7 +188,9 @@ class BrokerClient:
         try:
             r = subprocess.run(
                 ["curl", "-sS", "-H", f"Authorization: Basic {auth}", url],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             data = _json.loads(r.stdout)
         except Exception as e:
@@ -186,6 +232,7 @@ class BrokerClient:
         import base64
         import json as _json
         import subprocess
+
         if self.settings.is_live():
             cred = (self.settings.alpaca_live_key, self.settings.alpaca_live_secret)
         else:
@@ -194,7 +241,9 @@ class BrokerClient:
         try:
             r = subprocess.run(
                 ["curl", "-sS", "-H", f"Authorization: Basic {auth}", url],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             data = _json.loads(r.stdout)
         except Exception as e:
@@ -203,19 +252,23 @@ class BrokerClient:
         bars = data.get("bars", {}).get(symbol, [])
         out = []
         for b in bars:
-            out.append({
-                "t": b["t"],
-                "o": float(b["o"]),
-                "h": float(b["h"]),
-                "l": float(b["l"]),
-                "c": float(b["c"]),
-                "v": int(b["v"]),
-            })
+            out.append(
+                {
+                    "t": b["t"],
+                    "o": float(b["o"]),
+                    "h": float(b["h"]),
+                    "l": float(b["l"]),
+                    "c": float(b["c"]),
+                    "v": int(b["v"]),
+                }
+            )
         return out
 
     # ===== Market data (options) =====
 
-    def list_option_contracts(self, underlying: str, expiry_gte: str, expiry_lte: str, option_type: str | None = None) -> list[dict]:
+    def list_option_contracts(
+        self, underlying: str, expiry_gte: str, expiry_lte: str, option_type: str | None = None
+    ) -> list[dict]:
         """List all available option contracts for underlying in expiry window.
 
         expiry_gte / expiry_lte are YYYY-MM-DD.
@@ -250,15 +303,17 @@ class BrokerClient:
                         exp_str = exp.strftime("%Y-%m-%d")
                     else:
                         exp_str = str(exp)
-                    out.append({
-                        "symbol": c.symbol,  # OCC code e.g. SPY260815C00770000
-                        "underlying": underlying,
-                        "expiry": exp_str,
-                        "strike": float(c.strike_price),
-                        "type": "call" if c.type.value == "call" else "put",
-                        "open_interest": int(c.open_interest or 0),
-                        "close_price": float(c.close_price) if c.close_price else None,
-                    })
+                    out.append(
+                        {
+                            "symbol": c.symbol,  # OCC code e.g. SPY260815C00770000
+                            "underlying": underlying,
+                            "expiry": exp_str,
+                            "strike": float(c.strike_price),
+                            "type": "call" if c.type.value == "call" else "put",
+                            "open_interest": int(c.open_interest or 0),
+                            "close_price": float(c.close_price) if c.close_price else None,
+                        }
+                    )
                 page_token = getattr(page, "next_page_token", None)
                 if not page_token:
                     break
@@ -303,7 +358,9 @@ class BrokerClient:
         try:
             r = subprocess.run(
                 ["curl", "-sS", "-H", f"Authorization: Basic {auth}", url],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             data = _json.loads(r.stdout)
         except Exception as e:
@@ -358,8 +415,15 @@ class BrokerClient:
             limit_price=round(limit_price, 2),
             client_order_id=client_order_id,
         )
-        log.info("submit_buy %s qty=%d limit=%.2f coid=%s pos=%s tif=%s",
-                 contract_symbol, qty, limit_price, client_order_id, position_id, tif)
+        log.info(
+            "submit_buy %s qty=%d limit=%.2f coid=%s pos=%s tif=%s",
+            contract_symbol,
+            qty,
+            limit_price,
+            client_order_id,
+            position_id,
+            tif,
+        )
         return self.trading.submit_order(req)
 
     def submit_stock_buy(
@@ -379,8 +443,14 @@ class BrokerClient:
             limit_price=round(limit_price, 2),
             client_order_id=client_order_id,
         )
-        log.info("submit_stock_buy %s qty=%d limit=%.2f coid=%s pos=%s",
-                 symbol, qty, limit_price, client_order_id, position_id)
+        log.info(
+            "submit_stock_buy %s qty=%d limit=%.2f coid=%s pos=%s",
+            symbol,
+            qty,
+            limit_price,
+            client_order_id,
+            position_id,
+        )
         return self.trading.submit_order(req)
 
     def submit_stock_sell(
@@ -399,8 +469,13 @@ class BrokerClient:
             limit_price=round(limit_price, 2),
             client_order_id=client_order_id,
         )
-        log.info("submit_stock_sell %s qty=%d limit=%.2f coid=%s",
-                 symbol, qty, limit_price, client_order_id)
+        log.info(
+            "submit_stock_sell %s qty=%d limit=%.2f coid=%s",
+            symbol,
+            qty,
+            limit_price,
+            client_order_id,
+        )
         return self.trading.submit_order(req)
 
     def submit_close_sell(
@@ -420,8 +495,13 @@ class BrokerClient:
             limit_price=round(limit_price, 2),
             client_order_id=client_order_id,
         )
-        log.info("submit_close_sell %s qty=%d limit=%.2f coid=%s",
-                 contract_symbol, qty, limit_price, client_order_id)
+        log.info(
+            "submit_close_sell %s qty=%d limit=%.2f coid=%s",
+            contract_symbol,
+            qty,
+            limit_price,
+            client_order_id,
+        )
         return self.trading.submit_order(req)
 
     def submit_open_sell(
@@ -449,8 +529,14 @@ class BrokerClient:
             limit_price=round(limit_price, 2),
             client_order_id=client_order_id,
         )
-        log.info("submit_open_sell %s qty=%d limit=%.2f coid=%s pos=%s",
-                 contract_symbol, qty, limit_price, client_order_id, position_id)
+        log.info(
+            "submit_open_sell %s qty=%d limit=%.2f coid=%s pos=%s",
+            contract_symbol,
+            qty,
+            limit_price,
+            client_order_id,
+            position_id,
+        )
         return self.trading.submit_order(req)
 
     def submit_credit_spread(
@@ -506,8 +592,12 @@ class BrokerClient:
         )
         log.info(
             "submit_credit_spread short=%s long=%s qty=%d net_limit=%.2f coid=%s pos=%s",
-            short_put_symbol, long_put_symbol, qty,
-            short_put_limit - long_put_limit, client_order_id, position_id,
+            short_put_symbol,
+            long_put_symbol,
+            qty,
+            short_put_limit - long_put_limit,
+            client_order_id,
+            position_id,
         )
         return self.trading.submit_order(req)
 
@@ -557,7 +647,12 @@ class BrokerClient:
         )
         log.info(
             "submit_close_credit_spread short=%s long=%s qty=%d net_debit=%.2f coid=%s pos=%s",
-            short_put_symbol, long_put_symbol, qty, net_debit, client_order_id, position_id,
+            short_put_symbol,
+            long_put_symbol,
+            qty,
+            net_debit,
+            client_order_id,
+            position_id,
         )
         return self.trading.submit_order(req)
 
@@ -573,6 +668,7 @@ class BrokerClient:
             dd = int(contract_symbol[7:9])
             expiry_year = 2000 + yy
             from datetime import date
+
             exp = date(expiry_year, mm, dd)
             today = date.today()
             if exp <= today:
@@ -615,7 +711,11 @@ class BrokerClient:
         )
         log.info(
             "place_tpsl_bracket %s qty=%d tp=%.2f sl=%.2f/%.2f",
-            contract_symbol, qty, tp_price, sl_trigger_price, sl_limit_price,
+            contract_symbol,
+            qty,
+            tp_price,
+            sl_trigger_price,
+            sl_limit_price,
         )
         try:
             order = self.trading.submit_order(req)
@@ -661,8 +761,13 @@ class BrokerClient:
         )
         log.info(
             "submit_bracket_buy %s qty=%d entry=%.2f tp=%.2f sl=%.2f/%.2f coid=%s",
-            contract_symbol, qty, limit_price, tp_price, sl_trigger_price,
-            sl_limit_price, client_order_id,
+            contract_symbol,
+            qty,
+            limit_price,
+            tp_price,
+            sl_trigger_price,
+            sl_limit_price,
+            client_order_id,
         )
         return self.trading.submit_order(req)
 
@@ -693,6 +798,7 @@ class BrokerClient:
         """
         from alpaca.trading.enums import QueryOrderStatus
         from alpaca.trading.requests import GetOrdersRequest
+
         orders: list = []
         try:
             req = GetOrdersRequest(
@@ -728,20 +834,29 @@ class BrokerClient:
             if o.status != OrderStatus.FILLED:
                 continue
             asset_class = getattr(o, "asset_class", None) or getattr(o, "assetClass", None)
-            if asset_class is not None and asset_class not in {AssetClass.US_OPTION, AssetClass.US_EQUITY}:
+            if asset_class is not None and asset_class not in {
+                AssetClass.US_OPTION,
+                AssetClass.US_EQUITY,
+            }:
                 continue
-            if cutoff is not None and getattr(o, "submitted_at", None) is not None:
-                submitted = o.submitted_at
-                if submitted.tzinfo is None:
-                    submitted = submitted.replace(tzinfo=UTC)
-                if submitted < cutoff:
-                    continue
+            if cutoff is not None:
+                event_ts = getattr(o, "filled_at", None)
+                if not isinstance(event_ts, datetime):
+                    event_ts = getattr(o, "submitted_at", None)
+                if isinstance(event_ts, datetime):
+                    if event_ts.tzinfo is None:
+                        event_ts = event_ts.replace(tzinfo=UTC)
+                    if event_ts < cutoff:
+                        continue
             out.append(o)
         return out
 
+    def list_open_orders_or_raise(self) -> list[AlpacaOrder]:
+        return list(self.trading.get_orders())
+
     def list_open_orders(self) -> list[AlpacaOrder]:
         try:
-            return list(self.trading.get_orders())
+            return self.list_open_orders_or_raise()
         except Exception as e:
             log.warning("list_open_orders failed: %s", e)
             return []

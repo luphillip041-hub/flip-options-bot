@@ -60,9 +60,27 @@ def test_long_call_prefers_configured_otm_strike(tmp_path: Path):
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY_C_102", "expiry": expiry, "type": "call", "strike": 102.0, "open_interest": 100},
-        {"symbol": "SPY_C_103", "expiry": expiry, "type": "call", "strike": 103.0, "open_interest": 100},
-        {"symbol": "SPY_C_104", "expiry": expiry, "type": "call", "strike": 104.0, "open_interest": 100},
+        {
+            "symbol": "SPY_C_102",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 102.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_C_103",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 103.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_C_104",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 104.0,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {c["symbol"]: {"bid": 1.00, "ask": 1.06} for c in contracts}
@@ -94,9 +112,27 @@ def test_long_put_prefers_configured_otm_strike(tmp_path: Path):
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY_P_100", "expiry": expiry, "type": "put", "strike": 100.0, "open_interest": 100},
-        {"symbol": "SPY_P_101", "expiry": expiry, "type": "put", "strike": 101.0, "open_interest": 100},
-        {"symbol": "SPY_P_102", "expiry": expiry, "type": "put", "strike": 102.0, "open_interest": 100},
+        {
+            "symbol": "SPY_P_100",
+            "expiry": expiry,
+            "type": "put",
+            "strike": 100.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_P_101",
+            "expiry": expiry,
+            "type": "put",
+            "strike": 101.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_P_102",
+            "expiry": expiry,
+            "type": "put",
+            "strike": 102.0,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {c["symbol"]: {"bid": 1.00, "ask": 1.06} for c in contracts}
@@ -127,7 +163,13 @@ def test_long_call_disabled_suppresses_bullish_call_fallback(tmp_path: Path):
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     broker.list_option_contracts.return_value = [
-        {"symbol": "SPY_C_103", "expiry": expiry, "type": "call", "strike": 103.0, "open_interest": 100},
+        {
+            "symbol": "SPY_C_103",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 103.0,
+            "open_interest": 100,
+        },
     ]
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
 
@@ -196,8 +238,20 @@ def test_long_call_falls_forward_when_0dte_chain_is_too_wide(tmp_path: Path):
     exp0 = today.strftime("%Y-%m-%d")
     exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY0_C_103", "expiry": exp0, "type": "call", "strike": 103.0, "open_interest": 100},
-        {"symbol": "SPY7_C_103", "expiry": exp7, "type": "call", "strike": 103.0, "open_interest": 100},
+        {
+            "symbol": "SPY0_C_103",
+            "expiry": exp0,
+            "type": "call",
+            "strike": 103.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY7_C_103",
+            "expiry": exp7,
+            "type": "call",
+            "strike": 103.0,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {
@@ -233,8 +287,20 @@ def test_long_put_falls_forward_when_0dte_chain_is_too_wide(tmp_path: Path):
     exp0 = today.strftime("%Y-%m-%d")
     exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY0_P_101", "expiry": exp0, "type": "put", "strike": 101.0, "open_interest": 100},
-        {"symbol": "SPY7_P_101", "expiry": exp7, "type": "put", "strike": 101.0, "open_interest": 100},
+        {
+            "symbol": "SPY0_P_101",
+            "expiry": exp0,
+            "type": "put",
+            "strike": 101.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY7_P_101",
+            "expiry": exp7,
+            "type": "put",
+            "strike": 101.0,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {
@@ -270,8 +336,20 @@ def test_long_call_falls_forward_when_0dte_contract_is_over_cap(tmp_path: Path):
     exp0 = today.strftime("%Y-%m-%d")
     exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY0_C_103", "expiry": exp0, "type": "call", "strike": 103.0, "open_interest": 100},
-        {"symbol": "SPY7_C_103", "expiry": exp7, "type": "call", "strike": 103.0, "open_interest": 100},
+        {
+            "symbol": "SPY0_C_103",
+            "expiry": exp0,
+            "type": "call",
+            "strike": 103.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY7_C_103",
+            "expiry": exp7,
+            "type": "call",
+            "strike": 103.0,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {
@@ -308,8 +386,20 @@ def test_high_reward_mode_prefers_farther_otm_call(tmp_path: Path):
     broker.get_stock_quote.return_value = {"bid": 99.99, "ask": 100.01}
     expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY_C_100_5", "expiry": expiry, "type": "call", "strike": 100.5, "open_interest": 100},
-        {"symbol": "SPY_C_101_5", "expiry": expiry, "type": "call", "strike": 101.5, "open_interest": 100},
+        {
+            "symbol": "SPY_C_100_5",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 100.5,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_C_101_5",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 101.5,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {c["symbol"]: {"bid": 1.00, "ask": 1.06} for c in contracts}
@@ -342,9 +432,27 @@ def test_high_reward_mode_rejects_dust_premium_call(tmp_path: Path):
     broker.get_stock_quote.return_value = {"bid": 99.99, "ask": 100.01}
     expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY_C_101_5", "expiry": expiry, "type": "call", "strike": 101.5, "open_interest": 100},
-        {"symbol": "SPY_C_101_0", "expiry": expiry, "type": "call", "strike": 101.0, "open_interest": 100},
-        {"symbol": "SPY_C_100_5", "expiry": expiry, "type": "call", "strike": 100.5, "open_interest": 100},
+        {
+            "symbol": "SPY_C_101_5",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 101.5,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_C_101_0",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 101.0,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_C_100_5",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 100.5,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {
@@ -382,8 +490,20 @@ def test_high_reward_mode_prefers_farther_otm_put(tmp_path: Path):
     broker.get_stock_quote.return_value = {"bid": 99.99, "ask": 100.01}
     expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
-        {"symbol": "SPY_P_99_5", "expiry": expiry, "type": "put", "strike": 99.5, "open_interest": 100},
-        {"symbol": "SPY_P_98_5", "expiry": expiry, "type": "put", "strike": 98.5, "open_interest": 100},
+        {
+            "symbol": "SPY_P_99_5",
+            "expiry": expiry,
+            "type": "put",
+            "strike": 99.5,
+            "open_interest": 100,
+        },
+        {
+            "symbol": "SPY_P_98_5",
+            "expiry": expiry,
+            "type": "put",
+            "strike": 98.5,
+            "open_interest": 100,
+        },
     ]
     broker.list_option_contracts.return_value = contracts
     snapshots = {c["symbol"]: {"bid": 1.00, "ask": 1.06} for c in contracts}
@@ -414,20 +534,32 @@ def test_yfinance_1dte_bidask_confirmation_enriches_candidate(tmp_path: Path):
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = (datetime.now(UTC).date() + timedelta(days=1)).strftime("%Y-%m-%d")
-    contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    contracts = [
+        {
+            "symbol": "SPY260815C00103500",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 103.5,
+            "open_interest": 100,
+        }
+    ]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.20}
-    provider = FakeYFinanceProvider(YFinanceOptionQuote(
-        contract_symbol="SPY260815C00103500",
-        bid=1.05,
-        ask=1.12,
-        last_price=1.08,
-        volume=250,
-        open_interest=900,
-        implied_volatility=0.42,
-    ))
+    provider = FakeYFinanceProvider(
+        YFinanceOptionQuote(
+            contract_symbol="SPY260815C00103500",
+            bid=1.05,
+            ask=1.12,
+            last_price=1.08,
+            volume=250,
+            open_interest=900,
+            implied_volatility=0.42,
+        )
+    )
 
-    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(["SPY"])
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(
+        ["SPY"]
+    )
 
     assert result.candidates
     sig = result.candidates[0]
@@ -454,7 +586,15 @@ def test_yfinance_confirmation_not_queried_for_0dte(tmp_path: Path):
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = datetime.now(UTC).strftime("%Y-%m-%d")
-    contracts = [{"symbol": "SPY260814C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    contracts = [
+        {
+            "symbol": "SPY260814C00103500",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 103.5,
+            "open_interest": 100,
+        }
+    ]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
 
@@ -485,17 +625,29 @@ def test_yfinance_confirmation_applies_through_14dte_max(tmp_path: Path):
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = (datetime.now(UTC).date() + timedelta(days=14)).strftime("%Y-%m-%d")
-    contracts = [{"symbol": "SPY260828C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    contracts = [
+        {
+            "symbol": "SPY260828C00103500",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 103.5,
+            "open_interest": 100,
+        }
+    ]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
-    provider = FakeYFinanceProvider(YFinanceOptionQuote(
-        contract_symbol="SPY260828C00103500",
-        last_price=1.03,
-        last_trade_date=datetime.now(UTC).isoformat(),
-        volume=500,
-    ))
+    provider = FakeYFinanceProvider(
+        YFinanceOptionQuote(
+            contract_symbol="SPY260828C00103500",
+            last_price=1.03,
+            last_trade_date=datetime.now(UTC).isoformat(),
+            volume=500,
+        )
+    )
 
-    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(["SPY"])
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(
+        ["SPY"]
+    )
 
     assert result.candidates
     sig = result.candidates[0]
@@ -523,18 +675,39 @@ def test_yfinance_stale_volume_does_not_boost_candidate(tmp_path: Path):
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = (datetime.now(UTC).date() + timedelta(days=1)).strftime("%Y-%m-%d")
-    contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    contracts = [
+        {
+            "symbol": "SPY260815C00103500",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 103.5,
+            "open_interest": 100,
+        }
+    ]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
-    baseline = Scanner(settings, broker, FunnelRecorder(tmp_path / "base"), yfinance_provider=FakeYFinanceProvider(None)).scan(["SPY"]).candidates[0]
-    provider = FakeYFinanceProvider(YFinanceOptionQuote(
-        contract_symbol="SPY260815C00103500",
-        last_price=1.03,
-        last_trade_date="2026-08-13T16:57:05+00:00",
-        volume=500,
-    ))
+    baseline = (
+        Scanner(
+            settings,
+            broker,
+            FunnelRecorder(tmp_path / "base"),
+            yfinance_provider=FakeYFinanceProvider(None),
+        )
+        .scan(["SPY"])
+        .candidates[0]
+    )
+    provider = FakeYFinanceProvider(
+        YFinanceOptionQuote(
+            contract_symbol="SPY260815C00103500",
+            last_price=1.03,
+            last_trade_date="2026-08-13T16:57:05+00:00",
+            volume=500,
+        )
+    )
 
-    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(["SPY"])
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(
+        ["SPY"]
+    )
 
     assert result.candidates
     sig = result.candidates[0]
@@ -561,17 +734,29 @@ def test_yfinance_strict_gate_rejects_wide_1dte_quote(tmp_path: Path):
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
     expiry = (datetime.now(UTC).date() + timedelta(days=1)).strftime("%Y-%m-%d")
-    contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
+    contracts = [
+        {
+            "symbol": "SPY260815C00103500",
+            "expiry": expiry,
+            "type": "call",
+            "strike": 103.5,
+            "open_interest": 100,
+        }
+    ]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
-    provider = FakeYFinanceProvider(YFinanceOptionQuote(
-        contract_symbol="SPY260815C00103500",
-        bid=0.50,
-        ask=1.50,
-        volume=500,
-    ))
+    provider = FakeYFinanceProvider(
+        YFinanceOptionQuote(
+            contract_symbol="SPY260815C00103500",
+            bid=0.50,
+            ask=1.50,
+            volume=500,
+        )
+    )
 
-    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(["SPY"])
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path), yfinance_provider=provider).scan(
+        ["SPY"]
+    )
 
     assert result.candidates == []
 
@@ -580,13 +765,29 @@ def test_directional_executor_blocks_same_underlying_stack(tmp_path: Path):
     settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
     broker = MagicMock(spec=BrokerClient)
     broker.submit_bracket_buy.side_effect = Exception("complex orders not supported")
-    broker.submit_buy.return_value = SimpleNamespace(id="order-1", status="accepted", submitted_at="now", legs=[])
+    broker.submit_buy.return_value = SimpleNamespace(
+        id="order-1", status="accepted", submitted_at="now", legs=[]
+    )
     journal = Journal(tmp_path)
     risk = RiskEngine(settings, tmp_path)
     executor = Executor(settings, broker, journal, risk)
 
-    first = LongCallSignal(symbol="SPY260813C00103000", expiry="2026-08-13", strike=103, limit_price=1.20, conviction=0.9, dte=0)
-    second = LongPutSignal(symbol="SPY260813P00101000", expiry="2026-08-13", strike=101, limit_price=1.10, conviction=0.9, dte=0)
+    first = LongCallSignal(
+        symbol="SPY260813C00103000",
+        expiry="2026-08-13",
+        strike=103,
+        limit_price=1.20,
+        conviction=0.9,
+        dte=0,
+    )
+    second = LongPutSignal(
+        symbol="SPY260813P00101000",
+        expiry="2026-08-13",
+        strike=101,
+        limit_price=1.10,
+        conviction=0.9,
+        dte=0,
+    )
     assert executor.submit_long_call(first, equity=10_000, state=risk.load_state()).accepted
     denied = executor.submit_long_put(second, equity=10_000, state=risk.load_state())
 
@@ -606,31 +807,43 @@ def test_same_day_underlying_loss_lockout_blocks_more_directional_churn(tmp_path
     risk = RiskEngine(settings, tmp_path)
     executor = Executor(settings, broker, journal, risk)
     position_id = Journal.new_position_id()
-    journal.append(TradeEvent(
-        event_id="open-qqq-loss",
-        ts=Journal.now_iso(),
-        kind="open",
-        symbol="QQQ260817C00745000",
-        side="buy",
-        qty=6,
-        price=0.19,
-        position_id=position_id,
-        strategy_id="long_call",
-    ))
-    journal.upsert(TradeEvent(
-        event_id="close-qqq-loss",
-        ts=Journal.now_iso(),
-        kind="close",
-        symbol="QQQ260817C00745000",
-        side="sell",
-        qty=6,
-        price=0.09,
-        position_id=position_id,
-        realized_pnl=-60.0,
-        strategy_id="long_call",
-    ))
+    journal.append(
+        TradeEvent(
+            event_id="open-qqq-loss",
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol="QQQ260817C00745000",
+            side="buy",
+            qty=6,
+            price=0.19,
+            position_id=position_id,
+            strategy_id="long_call",
+        )
+    )
+    journal.upsert(
+        TradeEvent(
+            event_id="close-qqq-loss",
+            ts=Journal.now_iso(),
+            kind="close",
+            symbol="QQQ260817C00745000",
+            side="sell",
+            qty=6,
+            price=0.09,
+            position_id=position_id,
+            realized_pnl=-60.0,
+            strategy_id="long_call",
+            raw_broker_fill={"fill_source": "broker"},
+        )
+    )
 
-    sig = LongPutSignal(symbol="QQQ260818P00720000", expiry="2026-08-18", strike=720, limit_price=0.30, conviction=0.9, dte=4)
+    sig = LongPutSignal(
+        symbol="QQQ260818P00720000",
+        expiry="2026-08-18",
+        strike=720,
+        limit_price=0.30,
+        conviction=0.9,
+        dte=4,
+    )
     denied = executor.submit_long_put(sig, equity=10_000, state=risk.load_state())
 
     assert denied.accepted is False
@@ -642,12 +855,21 @@ def test_reconcile_long_option_open_uses_actual_broker_fill(tmp_path: Path):
     settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
     broker = MagicMock(spec=BrokerClient)
     broker.submit_bracket_buy.side_effect = Exception("complex orders not supported")
-    broker.submit_buy.return_value = SimpleNamespace(id="order-1", status="accepted", submitted_at="now", legs=[])
+    broker.submit_buy.return_value = SimpleNamespace(
+        id="order-1", status="accepted", submitted_at="now", legs=[]
+    )
     journal = Journal(tmp_path)
     risk = RiskEngine(settings, tmp_path)
     executor = Executor(settings, broker, journal, risk)
 
-    sig = LongCallSignal(symbol="SPY260813C00103000", expiry="2026-08-13", strike=103, limit_price=1.20, conviction=0.9, dte=0)
+    sig = LongCallSignal(
+        symbol="SPY260813C00103000",
+        expiry="2026-08-13",
+        strike=103,
+        limit_price=1.20,
+        conviction=0.9,
+        dte=0,
+    )
     result = executor.submit_long_call(sig, equity=10_000, state=risk.load_state())
     assert result.accepted
 
@@ -681,28 +903,32 @@ def test_reconcile_long_option_close_attempt_canonicalizes_on_fill(tmp_path: Pat
     position_id = Journal.new_position_id()
     symbol = "SPY260813C00103000"
     close_coid = "close-test-1"
-    journal.append(TradeEvent(
-        event_id="open-test-1",
-        ts="2026-08-13T14:00:00+00:00",
-        kind="open",
-        symbol=symbol,
-        side="buy",
-        qty=2,
-        price=1.20,
-        position_id=position_id,
-        strategy_id="long_call",
-    ))
-    journal.append(TradeEvent(
-        event_id=close_coid,
-        ts="2026-08-13T14:01:00+00:00",
-        kind="close_attempt",
-        symbol=symbol,
-        side="sell",
-        qty=2,
-        price=1.25,
-        position_id=position_id,
-        raw_broker_fill={"close_position_id": position_id},
-    ))
+    journal.append(
+        TradeEvent(
+            event_id="open-test-1",
+            ts="2026-08-13T14:00:00+00:00",
+            kind="open",
+            symbol=symbol,
+            side="buy",
+            qty=2,
+            price=1.20,
+            position_id=position_id,
+            strategy_id="long_call",
+        )
+    )
+    journal.append(
+        TradeEvent(
+            event_id=close_coid,
+            ts="2026-08-13T14:01:00+00:00",
+            kind="close_attempt",
+            symbol=symbol,
+            side="sell",
+            qty=2,
+            price=1.25,
+            position_id=position_id,
+            raw_broker_fill={"close_position_id": position_id},
+        )
+    )
     before = journal.get_position_for_id(position_id)
     assert before is not None
     assert before["state"] == "open"
@@ -728,3 +954,167 @@ def test_reconcile_long_option_close_attempt_canonicalizes_on_fill(tmp_path: Pat
     assert pos is not None
     assert pos["state"] == "closed"
     assert pos["qty_closed"] == 2
+
+
+def test_pending_broker_buy_blocks_same_underlying_directional_entry(tmp_path: Path):
+    settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
+    broker = MagicMock(spec=BrokerClient)
+    pending = SimpleNamespace(
+        client_order_id="open-pending-spy",
+        side="buy",
+        symbol="SPY260817C00500000",
+    )
+    broker.list_open_orders_or_raise.return_value = [pending]
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+
+    sig = LongPutSignal(
+        symbol="SPY260817P00490000",
+        expiry="2026-08-17",
+        strike=490,
+        limit_price=0.40,
+        conviction=0.9,
+        dte=0,
+    )
+    denied = executor.submit_long_put(sig, equity=10_000, state=risk.load_state())
+
+    assert denied.accepted is False
+    assert denied.reason == "duplicate_directional_underlying:SPY"
+    broker.submit_buy.assert_not_called()
+
+
+def test_pending_entry_lookup_failure_fails_closed(tmp_path: Path):
+    settings = Settings(run_dir=tmp_path, max_contract_dollar=500, per_trade_risk_pct=10.0)
+    broker = MagicMock(spec=BrokerClient)
+    broker.list_open_orders_or_raise.side_effect = RuntimeError("broker down")
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+
+    sig = LongCallSignal(
+        symbol="QQQ260817C00490000",
+        expiry="2026-08-17",
+        strike=490,
+        limit_price=0.40,
+        conviction=0.9,
+        dte=0,
+    )
+    denied = executor.submit_long_call(sig, equity=10_000, state=risk.load_state())
+
+    assert denied.accepted is False
+    assert denied.reason == "pending_entry_reservation_unavailable"
+
+
+def test_partial_broker_loss_triggers_underlying_lockout(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        max_contract_dollar=500,
+        per_trade_risk_pct=10.0,
+        directional_underlying_loss_lockout_dollar=50.0,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.list_open_orders_or_raise.return_value = []
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+    position_id = Journal.new_position_id()
+    journal.append(
+        TradeEvent(
+            event_id="open-spy-partial-loss",
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol="SPY260817C00500000",
+            side="buy",
+            qty=2,
+            price=1.00,
+            position_id=position_id,
+            strategy_id="long_call",
+        )
+    )
+    journal.upsert(
+        TradeEvent(
+            event_id="close-spy-partial-loss",
+            ts=Journal.now_iso(),
+            kind="close",
+            symbol="SPY260817C00500000",
+            side="sell",
+            qty=1,
+            price=0.40,
+            position_id=position_id,
+            realized_pnl=-60.0,
+            strategy_id="long_call",
+            raw_broker_fill={"fill_source": "broker"},
+        )
+    )
+
+    sig = LongPutSignal(
+        symbol="SPY260817P00490000",
+        expiry="2026-08-17",
+        strike=490,
+        limit_price=0.40,
+        conviction=0.9,
+        dte=0,
+    )
+    denied = executor.submit_long_put(sig, equity=10_000, state=risk.load_state())
+
+    assert denied.accepted is False
+    assert denied.reason.startswith("directional_underlying_loss_lockout:SPY")
+
+
+def test_non_broker_loss_does_not_trigger_underlying_lockout(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        max_contract_dollar=500,
+        per_trade_risk_pct=10.0,
+        directional_underlying_loss_lockout_dollar=50.0,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.list_open_orders_or_raise.return_value = []
+    broker.submit_bracket_buy.side_effect = Exception("complex orders not supported")
+    broker.submit_buy.return_value = SimpleNamespace(
+        id="order-ok", status="accepted", submitted_at="now", legs=[]
+    )
+    journal = Journal(tmp_path)
+    risk = RiskEngine(settings, tmp_path)
+    executor = Executor(settings, broker, journal, risk)
+    position_id = Journal.new_position_id()
+    journal.append(
+        TradeEvent(
+            event_id="open-spy-local-loss",
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol="SPY260817C00500000",
+            side="buy",
+            qty=1,
+            price=1.00,
+            position_id=position_id,
+            strategy_id="long_call",
+        )
+    )
+    journal.upsert(
+        TradeEvent(
+            event_id="close-spy-local-loss",
+            ts=Journal.now_iso(),
+            kind="close",
+            symbol="SPY260817C00500000",
+            side="sell",
+            qty=1,
+            price=0.40,
+            position_id=position_id,
+            realized_pnl=-60.0,
+            strategy_id="long_call",
+        )
+    )
+
+    sig = LongPutSignal(
+        symbol="SPY260817P00490000",
+        expiry="2026-08-17",
+        strike=490,
+        limit_price=0.40,
+        conviction=0.9,
+        dte=0,
+    )
+    accepted = executor.submit_long_put(sig, equity=10_000, state=risk.load_state())
+
+    assert accepted.accepted is True

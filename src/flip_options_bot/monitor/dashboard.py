@@ -146,11 +146,23 @@ def main():
     st.header("Funnel — last 20 scans")
     funnel = _read_funnel(run_dir, n=20)
     if not funnel.empty:
-        keep_cols = [c for c in [
-            "ts", "watchlist_count", "eligible_count", "chains_fetched", "chains_failed",
-            "move_pass_count", "momentum_pass_count", "contract_select_pass",
-            "sized_count", "submitted_count", "dominant_skip_reason",
-        ] if c in funnel.columns]
+        keep_cols = [
+            c
+            for c in [
+                "ts",
+                "watchlist_count",
+                "eligible_count",
+                "chains_fetched",
+                "chains_failed",
+                "move_pass_count",
+                "momentum_pass_count",
+                "contract_select_pass",
+                "sized_count",
+                "submitted_count",
+                "dominant_skip_reason",
+            ]
+            if c in funnel.columns
+        ]
         st.dataframe(funnel[keep_cols], use_container_width=True)
     else:
         st.info("No funnel rows yet.")

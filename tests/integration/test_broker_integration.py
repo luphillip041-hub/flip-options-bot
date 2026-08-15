@@ -87,6 +87,7 @@ def test_get_stock_bars_minute_returns_data(broker: BrokerClient):
 
 def test_list_option_contracts_returns_active(broker: BrokerClient):
     from datetime import datetime, timedelta
+
     now = datetime.now(UTC)
     expiry_gte = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     expiry_lte = (now + timedelta(days=14)).strftime("%Y-%m-%d")

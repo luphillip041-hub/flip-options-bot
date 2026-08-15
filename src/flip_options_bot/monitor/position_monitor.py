@@ -122,7 +122,7 @@ class PositionMonitor:
             position_id = pos.get("position_id", "")
             strategy_id = pos.get("strategy_id", "") or ""
 
-            if symbol in pending_close_symbols and not symbol.startswith("BPCS:"):
+            if symbol in pending_close_symbols:
                 log.info("monitor skip %s — pending close order already working", symbol)
                 continue
 
@@ -130,7 +130,9 @@ class PositionMonitor:
                 spread_decision = self._evaluate_spread_position(pos, qty, state)
                 if spread_decision is None:
                     continue
-                trigger, short_sym, long_sym, short_limit, long_limit, entry_credit = spread_decision
+                trigger, short_sym, long_sym, short_limit, long_limit, entry_credit = (
+                    spread_decision
+                )
                 close = self.closer.flatten_credit_spread(
                     position_id=position_id,
                     short_put_symbol=short_sym,
@@ -146,18 +148,18 @@ class PositionMonitor:
                     result.reasons[trigger] = result.reasons.get(trigger, 0) + 1
                     log.info(
                         "monitor close spread %s/%s qty=%d trigger=%s debit=%.2f",
-                        short_sym, long_sym, qty, trigger, max(short_limit - long_limit, 0.01),
+                        short_sym,
+                        long_sym,
+                        qty,
+                        trigger,
+                        max(short_limit - long_limit, 0.01),
                     )
                 continue
 
             avg_entry_raw = pos.get("avg_entry_price")
             avg_entry = float(avg_entry_raw) if avg_entry_raw is not None else 0.0
             peak_mark_raw = pos.get("peak_mark")
-            peak_mark = (
-                float(peak_mark_raw)
-                if peak_mark_raw is not None
-                else max(avg_entry, 0.0)
-            )
+            peak_mark = float(peak_mark_raw) if peak_mark_raw is not None else max(avg_entry, 0.0)
 
             if strategy_id == "long_equity":
                 snap = self.broker.get_stock_quote(symbol) or {}
@@ -182,7 +184,9 @@ class PositionMonitor:
                 peak_mark = mark
 
             if strategy_id == "long_equity":
-                decision = self._evaluate_long_equity_position(pos, qty, avg_entry, peak_mark, mark, state)
+                decision = self._evaluate_long_equity_position(
+                    pos, qty, avg_entry, peak_mark, mark, state
+                )
             else:
                 decision = self._evaluate_position(
                     pos, qty, qty_closed, avg_entry, peak_mark, mark, state
@@ -203,13 +207,19 @@ class PositionMonitor:
                 result.reasons[trigger] = result.reasons.get(trigger, 0) + 1
                 log.info(
                     "monitor close %s qty=%d trigger=%s mark=%.2f limit=%.2f",
-                    symbol, close_qty, trigger, mark, limit_price,
+                    symbol,
+                    close_qty,
+                    trigger,
+                    mark,
+                    limit_price,
                 )
 
         if result.closes_triggered:
             log.warning(
                 "monitor tick: %d positions, %d closes (%s)",
-                result.positions_seen, result.closes_triggered, result.reasons,
+                result.positions_seen,
+                result.closes_triggered,
+                result.reasons,
             )
         return result
 
@@ -237,6 +247,9 @@ class PositionMonitor:
                 and symbol
             ):
                 symbols.add(symbol)
+            elif coid.startswith("close-spread-") and symbol:
+                symbols.add(symbol)
+        symbols.update(self._journal_pending_close_symbols())
         return symbols
 
     def _journal_pending_close_symbols(self) -> set[str]:
@@ -251,7 +264,7 @@ class PositionMonitor:
                 rows = conn.execute(
                     """
                     SELECT DISTINCT symbol FROM trades
-                    WHERE kind = 'close_attempt'
+                    WHERE kind IN ('close_attempt', 'close_spread_attempt')
                       AND symbol IS NOT NULL
                       AND symbol != ''
                     """
@@ -275,8 +288,16 @@ class PositionMonitor:
             return None
         stop_raw = pos.get("sl_trigger_price")
         tp_raw = pos.get("tp_price")
-        stop_price = float(stop_raw) if stop_raw is not None else avg_entry * (1.0 - self.settings.long_equity_stop_loss_pct)
-        take_profit = float(tp_raw) if tp_raw is not None else avg_entry * (1.0 + self.settings.long_equity_take_profit_pct)
+        stop_price = (
+            float(stop_raw)
+            if stop_raw is not None
+            else avg_entry * (1.0 - self.settings.long_equity_stop_loss_pct)
+        )
+        take_profit = (
+            float(tp_raw)
+            if tp_raw is not None
+            else avg_entry * (1.0 + self.settings.long_equity_take_profit_pct)
+        )
 
         if mark <= stop_price:
             return ("equity_sl", qty, round(max(mark, stop_price * 0.999), 2))
@@ -291,7 +312,7 @@ class PositionMonitor:
                 retention=self.trailing_retention,
                 profit_floor_pct=self.profit_floor_pct,
             )
-            if mark <= exit_floor:
+            if mark < exit_floor:
                 return ("equity_trailing_floor", qty, round(mark, 2))
 
         now = now_utc()
@@ -357,7 +378,7 @@ class PositionMonitor:
 
         # === 4. trailing_floor — only fires when armed (peak gain >= arm_pct) ===
         gain_pct = (peak_mark - avg_entry) / avg_entry
-        if qty_closed > 0:
+        if qty_closed > 0 or (qty == 1 and qty_closed == 0):
             trailing_arm = self.runner_trailing_arm_pct
             trailing_retention = self.runner_trailing_retention
             profit_floor_pct = self.runner_profit_floor_pct
@@ -374,7 +395,7 @@ class PositionMonitor:
                 retention=trailing_retention,
                 profit_floor_pct=profit_floor_pct,
             )
-            if mark <= exit_floor:
+            if mark < exit_floor:
                 limit_price = self._exit_price(reason, mark, avg_entry)
                 return (reason, qty, limit_price)
 
@@ -472,6 +493,7 @@ class PositionMonitor:
     def _occ_expiry_date(contract_symbol: str) -> date | None:
         # Root length can vary. The OCC date is the 6 digits immediately before C/P + strike.
         import re
+
         m = re.match(r"^[A-Z]+(\d{6})[CP]\d{8}$", contract_symbol)
         if not m:
             return None

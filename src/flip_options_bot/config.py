@@ -111,13 +111,13 @@ class Settings:
     daily_profit_lock_retention_pct: float = 0.50
 
     # Gain-protection monitor knobs
-    sl_threshold_pct: float = 0.50       # SL fires at 50% of entry
-    tp_multiplier: float = 1.25          # partial TP at +25% on multi-contract lots
-    tp_full_multiplier: float = 4.00     # 1-lot moonshot full TP at +300%
-    trailing_arm_pct: float = 0.06       # trailing floor arms after +6%
-    trailing_retention: float = 0.70     # retain 70% of observed peak gain
-    profit_floor_pct: float = 1.08       # never give gains back below entry +8%
-    min_tp_profit_dollar: float = 10.0   # capture small high-convexity winners
+    sl_threshold_pct: float = 0.50  # SL fires at 50% of entry
+    tp_multiplier: float = 1.25  # partial TP at +25% on multi-contract lots
+    tp_full_multiplier: float = 4.00  # 1-lot moonshot full TP at +300%
+    trailing_arm_pct: float = 0.06  # trailing floor arms after +6%
+    trailing_retention: float = 0.70  # retain 70% of observed peak gain
+    profit_floor_pct: float = 1.08  # never give gains back below entry +8%
+    min_tp_profit_dollar: float = 10.0  # capture small high-convexity winners
     # After a partial TP, the remaining contracts are moonshot runners: they
     # get more room than the first tranche, but still cannot give back all green.
     runner_trailing_arm_pct: float = 0.25
@@ -300,15 +300,9 @@ class Settings:
             trailing_retention=_coerce_float(merged, "FOB_TRAILING_RETENTION", 0.70),
             profit_floor_pct=_coerce_float(merged, "FOB_PROFIT_FLOOR_PCT", 1.08),
             min_tp_profit_dollar=_coerce_float(merged, "FOB_MIN_TP_PROFIT_DOLLAR", 10.0),
-            runner_trailing_arm_pct=_coerce_float(
-                merged, "FOB_RUNNER_TRAILING_ARM_PCT", 0.25
-            ),
-            runner_trailing_retention=_coerce_float(
-                merged, "FOB_RUNNER_TRAILING_RETENTION", 0.50
-            ),
-            runner_profit_floor_pct=_coerce_float(
-                merged, "FOB_RUNNER_PROFIT_FLOOR_PCT", 1.10
-            ),
+            runner_trailing_arm_pct=_coerce_float(merged, "FOB_RUNNER_TRAILING_ARM_PCT", 0.25),
+            runner_trailing_retention=_coerce_float(merged, "FOB_RUNNER_TRAILING_RETENTION", 0.50),
+            runner_profit_floor_pct=_coerce_float(merged, "FOB_RUNNER_PROFIT_FLOOR_PCT", 1.10),
             long_call_enabled=_coerce_bool(merged, "FOB_LONG_CALL_ENABLED", True),
             long_call_min_direction_move_pct=_coerce_float(
                 merged, "FOB_LONG_CALL_MIN_DIRECTION_MOVE_PCT", 0.0010
@@ -323,9 +317,7 @@ class Settings:
             long_call_directional_lookback_minutes=_coerce_int(
                 merged, "FOB_LONG_CALL_DIRECTIONAL_LOOKBACK_MINUTES", 20
             ),
-            long_call_target_otm_pct=_coerce_float(
-                merged, "FOB_LONG_CALL_TARGET_OTM_PCT", 0.003
-            ),
+            long_call_target_otm_pct=_coerce_float(merged, "FOB_LONG_CALL_TARGET_OTM_PCT", 0.003),
             long_put_enabled=_coerce_bool(merged, "FOB_LONG_PUT_ENABLED", False),
             long_put_min_direction_move_pct=_coerce_float(
                 merged, "FOB_LONG_PUT_MIN_DIRECTION_MOVE_PCT", 0.0010
@@ -340,18 +332,14 @@ class Settings:
             long_put_directional_lookback_minutes=_coerce_int(
                 merged, "FOB_LONG_PUT_DIRECTIONAL_LOOKBACK_MINUTES", 20
             ),
-            long_put_target_otm_pct=_coerce_float(
-                merged, "FOB_LONG_PUT_TARGET_OTM_PCT", 0.003
-            ),
+            long_put_target_otm_pct=_coerce_float(merged, "FOB_LONG_PUT_TARGET_OTM_PCT", 0.003),
             long_option_high_reward_mode=_coerce_bool(
                 merged, "FOB_LONG_OPTION_HIGH_REWARD_MODE", False
             ),
             long_option_otm_ladder_pct=_coerce_float_tuple(
                 merged, "FOB_LONG_OPTION_OTM_LADDER_PCT", (0.003, 0.006, 0.010, 0.015)
             ),
-            long_option_min_premium=_coerce_float(
-                merged, "FOB_LONG_OPTION_MIN_PREMIUM", 0.15
-            ),
+            long_option_min_premium=_coerce_float(merged, "FOB_LONG_OPTION_MIN_PREMIUM", 0.15),
             long_option_max_spread_pct=_coerce_float(
                 merged, "FOB_LONG_OPTION_MAX_SPREAD_PCT", 0.35
             ),
@@ -383,7 +371,9 @@ class Settings:
             long_equity_min_short_momentum_pct=_coerce_float(
                 merged, "FOB_LONG_EQUITY_MIN_SHORT_MOMENTUM_PCT", 0.0010
             ),
-            long_equity_min_conviction=_coerce_float(merged, "FOB_LONG_EQUITY_MIN_CONVICTION", 0.55),
+            long_equity_min_conviction=_coerce_float(
+                merged, "FOB_LONG_EQUITY_MIN_CONVICTION", 0.55
+            ),
             long_equity_directional_lookback_minutes=_coerce_int(
                 merged, "FOB_LONG_EQUITY_DIRECTIONAL_LOOKBACK_MINUTES", 20
             ),
@@ -391,7 +381,9 @@ class Settings:
                 merged, "FOB_LONG_EQUITY_MAX_POSITION_DOLLAR", 500.0
             ),
             long_equity_stop_loss_pct=_coerce_float(merged, "FOB_LONG_EQUITY_STOP_LOSS_PCT", 0.004),
-            long_equity_take_profit_pct=_coerce_float(merged, "FOB_LONG_EQUITY_TAKE_PROFIT_PCT", 0.008),
+            long_equity_take_profit_pct=_coerce_float(
+                merged, "FOB_LONG_EQUITY_TAKE_PROFIT_PCT", 0.008
+            ),
             diagonal_enabled=_coerce_bool(merged, "FOB_DIAGONAL_ENABLED", False),
             bpcs_enabled=_coerce_bool(merged, "FOB_BPCS_ENABLED", False),
             bpcs_target_dte=_coerce_int(merged, "FOB_BPCS_TARGET_DTE", 35),
@@ -414,9 +406,7 @@ class Settings:
             alert_level=merged.get("FOB_ALERT_LEVEL", "normal"),
             discord_webhook=merged.get("FOB_DISCORD_WEBHOOK", ""),
             run_dir=Path(run_dir_raw),
-            position_monitor_interval_s=_coerce_int(
-                merged, "FOB_POSITION_MONITOR_INTERVAL_S", 15
-            ),
+            position_monitor_interval_s=_coerce_int(merged, "FOB_POSITION_MONITOR_INTERVAL_S", 15),
         )
 
 

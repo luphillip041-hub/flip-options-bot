@@ -29,7 +29,14 @@ def _open(journal: Journal, symbol: str = "SPY260815C00770000", qty: int = 1, pr
     )
 
 
-def _close(journal: Journal, position_id: str, symbol: str = "SPY260815C00770000", qty: int = 1, price: float = 2.55, pnl: float = 0.05):
+def _close(
+    journal: Journal,
+    position_id: str,
+    symbol: str = "SPY260815C00770000",
+    qty: int = 1,
+    price: float = 2.55,
+    pnl: float = 0.05,
+):
     return TradeEvent(
         event_id=f"close-{position_id}",
         ts=Journal.now_iso(),

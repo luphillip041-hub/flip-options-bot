@@ -21,7 +21,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Make the bot package importable when this script is run from cron
@@ -30,7 +30,6 @@ if str(_BOT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_BOT_ROOT / "src"))
 
 from flip_options_bot.config import get_settings  # noqa: E402
-from flip_options_bot.journal import Journal  # noqa: E402
 from flip_options_bot.observation import ObservationHarness  # noqa: E402
 from flip_options_bot.risk import RiskEngine  # noqa: E402
 
@@ -69,9 +68,7 @@ def _load_account_snapshot() -> dict:
     risk = RiskEngine(settings, settings.run_dir)
     state = risk.load_state()
     return {
-        "equity_estimate": round(
-            float(settings.equity_start) + float(state.realized_pnl_total), 2
-        ),
+        "equity_estimate": round(float(settings.equity_start) + float(state.realized_pnl_total), 2),
         "daily_pnl": round(state.daily_pnl, 2),
         "weekly_pnl": round(state.weekly_pnl, 2),
         "realized_total": round(state.realized_pnl_total, 2),
@@ -87,7 +84,7 @@ def _load_recent_closes(hours: int = 24) -> list[dict]:
     db = settings.run_dir / "journal.db"
     if not db.exists():
         return []
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
     out = []
     with sqlite3.connect(db) as conn:
         rows = conn.execute(
@@ -96,15 +93,17 @@ def _load_recent_closes(hours: int = 24) -> list[dict]:
             (cutoff,),
         ).fetchall()
     for r in rows:
-        out.append({
-            "event_id": r[0],
-            "ts": r[1],
-            "symbol": r[2],
-            "qty": r[3],
-            "price": r[4],
-            "realized_pnl": r[5],
-            "strategy_id": r[6],
-        })
+        out.append(
+            {
+                "event_id": r[0],
+                "ts": r[1],
+                "symbol": r[2],
+                "qty": r[3],
+                "price": r[4],
+                "realized_pnl": r[5],
+                "strategy_id": r[6],
+            }
+        )
     return out
 
 
@@ -113,7 +112,7 @@ def _load_funnel_stats(hours: int = 24) -> dict:
     funnel_path = settings.run_dir / "funnel.jsonl"
     if not funnel_path.exists():
         return {"scans": 0, "candidates": 0, "submitted": 0, "dominant_skip": ""}
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours))
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
     scans = 0
     candidates_total = 0
     submitted_total = 0
@@ -134,9 +133,7 @@ def _load_funnel_stats(hours: int = 24) -> dict:
         skip = row.get("dominant_skip_reason", "")
         if skip:
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
-    dominant_skip = (
-        max(skip_counts.items(), key=lambda x: x[1])[0] if skip_counts else ""
-    )
+    dominant_skip = max(skip_counts.items(), key=lambda x: x[1])[0] if skip_counts else ""
     return {
         "scans": scans,
         "candidates": candidates_total,
@@ -146,7 +143,7 @@ def _load_funnel_stats(hours: int = 24) -> dict:
 
 
 def render_markdown(account: dict, closes: list[dict], funnel: dict, gate: dict) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
         f"📊 **flip-options-bot daily digest** — {now}",
         "",
@@ -160,14 +157,16 @@ def render_markdown(account: dict, closes: list[dict], funnel: dict, gate: dict)
     if account.get("kill_switch"):
         lines.append(f"- **KILL SWITCH ACTIVE**: {account.get('kill_reason', '')}")
 
-    lines.extend([
-        "",
-        "**Last 24h funnel**",
-        f"- Scans: {funnel['scans']}",
-        f"- Candidates: {funnel['candidates']}",
-        f"- Submitted: {funnel['submitted']}",
-        f"- Dominant skip: `{funnel['dominant_skip']}`",
-    ])
+    lines.extend(
+        [
+            "",
+            "**Last 24h funnel**",
+            f"- Scans: {funnel['scans']}",
+            f"- Candidates: {funnel['candidates']}",
+            f"- Submitted: {funnel['submitted']}",
+            f"- Dominant skip: `{funnel['dominant_skip']}`",
+        ]
+    )
 
     lines.extend(["", "**Last 24h closes**"])
     if closes:
@@ -179,17 +178,21 @@ def render_markdown(account: dict, closes: list[dict], funnel: dict, gate: dict)
     else:
         lines.append("- (none)")
 
-    lines.extend([
-        "",
-        "**Promotion gate**",
-        f"- Eligible: **{'YES' if gate.get('eligible') else 'NO'}**",
-    ])
+    lines.extend(
+        [
+            "",
+            "**Promotion gate**",
+            f"- Eligible: **{'YES' if gate.get('eligible') else 'NO'}**",
+        ]
+    )
     for k, v in gate.items():
         if k == "eligible":
             continue
         lines.append(f"- {k}: {v}")
     lines.append("")
-    lines.append("_Live mode requires explicit operator action (set `LIVETRADE_ENABLED=true`). Auto-promotion is disabled._")
+    lines.append(
+        "_Live mode requires explicit operator action (set `LIVETRADE_ENABLED=true`). Auto-promotion is disabled._"
+    )
     return "\n".join(lines)
 
 

@@ -23,7 +23,7 @@ MARKET_CLOSE_ET = time(16, 0)
 DEFAULT_EOD_FLATTEN_MINUTES = 15
 
 # Allowed order time window
-DEFAULT_ENTRY_OPEN_ET = time(9, 45)   # don't fire first 15 min of open
+DEFAULT_ENTRY_OPEN_ET = time(9, 45)  # don't fire first 15 min of open
 DEFAULT_ENTRY_CLOSE_ET = time(15, 45)  # last 15 min too volatile
 
 
@@ -82,8 +82,9 @@ def minutes_to_close(dt_utc: datetime | None = None) -> int:
     Negative means we're past today's close.
     """
     d = to_et(dt_utc or now_utc())
-    close_dt = d.replace(hour=MARKET_CLOSE_ET.hour, minute=MARKET_CLOSE_ET.minute,
-                         second=0, microsecond=0)
+    close_dt = d.replace(
+        hour=MARKET_CLOSE_ET.hour, minute=MARKET_CLOSE_ET.minute, second=0, microsecond=0
+    )
     diff_minutes = (close_dt - d).total_seconds() / 60.0
     if diff_minutes < 0:
         return -1  # past today's close
@@ -93,8 +94,9 @@ def minutes_to_close(dt_utc: datetime | None = None) -> int:
 def minutes_to_open(dt_utc: datetime | None = None) -> int:
     """Minutes until next 09:30 ET (today or tomorrow). Returns -1 if open now."""
     d = to_et(dt_utc or now_utc())
-    open_today = d.replace(hour=MARKET_OPEN_ET.hour, minute=MARKET_OPEN_ET.minute,
-                            second=0, microsecond=0)
+    open_today = d.replace(
+        hour=MARKET_OPEN_ET.hour, minute=MARKET_OPEN_ET.minute, second=0, microsecond=0
+    )
     now_t = d.time()
     if MARKET_OPEN_ET <= now_t < MARKET_CLOSE_ET and d.weekday() < 5:
         return -1
@@ -105,9 +107,9 @@ def minutes_to_open(dt_utc: datetime | None = None) -> int:
     while True:
         next_day = d + timedelta(days=days_ahead)
         if next_day.weekday() < 5:
-            next_open = next_day.replace(hour=MARKET_OPEN_ET.hour,
-                                          minute=MARKET_OPEN_ET.minute,
-                                          second=0, microsecond=0)
+            next_open = next_day.replace(
+                hour=MARKET_OPEN_ET.hour, minute=MARKET_OPEN_ET.minute, second=0, microsecond=0
+            )
             return int((next_open - d).total_seconds() / 60.0)
         days_ahead += 1
         if days_ahead > 14:

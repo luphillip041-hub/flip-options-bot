@@ -137,7 +137,9 @@ def test_record_close_idempotent_on_event_id(tmp_path: Path):
 
 
 def test_contracts_computed_from_max_contract_dollar(tmp_path: Path):
-    risk, _ = _make_engine(tmp_path, max_contract_dollar=500, max_positions=3, per_trade_risk_pct=10.0)
+    risk, _ = _make_engine(
+        tmp_path, max_contract_dollar=500, max_positions=3, per_trade_risk_pct=10.0
+    )
     state = risk.load_state()
     # Proposed debit $1.50/contract → $150 contract risk; $500 cap allows 3 contracts.
     decision = risk.evaluate_pre_trade(state, equity=10_000.0, proposed_debit=1.50)

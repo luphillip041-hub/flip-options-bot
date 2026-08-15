@@ -41,8 +41,22 @@ log = logging.getLogger("flip_options_bot.daemon")
 # This is the default paper-forward universe; operators can still override via
 # FOB_WATCHLIST for narrower studies.
 DEFAULT_WATCHLIST = [
-    "SPY", "QQQ", "IWM", "DIA", "TLT", "XLF", "XLE", "XLK", "SMH",
-    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "AMD",
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "TLT",
+    "XLF",
+    "XLE",
+    "XLK",
+    "SMH",
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "MSFT",
+    "AMZN",
+    "META",
+    "AMD",
 ]
 
 
@@ -77,7 +91,9 @@ def write_heartbeat(settings: Settings, status: dict) -> None:
     path.write_text(json.dumps(payload, indent=2))
 
 
-def _candidate_quality_key(sig: LongCallSignal | LongPutSignal | LongEquitySignal, settings: Settings) -> tuple[float, int, float]:
+def _candidate_quality_key(
+    sig: LongCallSignal | LongPutSignal | LongEquitySignal, settings: Settings
+) -> tuple[float, int, float]:
     """Global submission ordering: quality first, then preferred DTE.
 
     Scanner does per-underlying chain quality and OTM sorting; daemon uses this
@@ -86,7 +102,9 @@ def _candidate_quality_key(sig: LongCallSignal | LongPutSignal | LongEquitySigna
     conviction = float(getattr(sig, "conviction", 0.0))
     dte = int(getattr(sig, "dte", settings.target_dte))
     high_reward_bonus = 0.05 if settings.long_option_high_reward_mode else 0.0
-    option_bonus = high_reward_bonus if getattr(sig, "strategy_id", "") in {"long_call", "long_put"} else 0.0
+    option_bonus = (
+        high_reward_bonus if getattr(sig, "strategy_id", "") in {"long_call", "long_put"} else 0.0
+    )
     return (conviction + option_bonus, -abs(dte - settings.target_dte), -dte)
 
 
@@ -193,20 +211,24 @@ def run_once(
             "runner_profit_floor_pct": settings.runner_profit_floor_pct,
         }
     result = scanner.scan(watchlist)
-    log.info("scan %s: watchlist=%d candidates=%d skip=%s",
-             result.funnel_row.scan_id[:8],
-             result.funnel_row.watchlist_count,
-             len(result.candidates),
-             result.funnel_row.dominant_skip_reason)
+    log.info(
+        "scan %s: watchlist=%d candidates=%d skip=%s",
+        result.funnel_row.scan_id[:8],
+        result.funnel_row.watchlist_count,
+        len(result.candidates),
+        result.funnel_row.dominant_skip_reason,
+    )
 
     # Step 2b: BPCS scan (parallel, only if enabled)
     bpcs_result = None
     if settings.bpcs_enabled:
         bpcs_result = scanner.scan_bpcs(watchlist)
-        log.info("bpcs scan %s: candidates=%d skip=%s",
-                 bpcs_result.funnel_row.scan_id[:8],
-                 len(bpcs_result.candidates),
-                 bpcs_result.funnel_row.dominant_skip_reason)
+        log.info(
+            "bpcs scan %s: candidates=%d skip=%s",
+            bpcs_result.funnel_row.scan_id[:8],
+            len(bpcs_result.candidates),
+            bpcs_result.funnel_row.dominant_skip_reason,
+        )
 
     # Step 3: gate each candidate through risk + executor
     if settings.is_live():
@@ -225,11 +247,17 @@ def run_once(
         # Reload state inside the loop because record_open mutates open_position_count
         fresh_state = risk.load_state()
         if sig.strategy_id == "long_equity":
-            exec_result = executor.submit_long_equity(cast(LongEquitySignal, sig), equity=equity, state=fresh_state)
+            exec_result = executor.submit_long_equity(
+                cast(LongEquitySignal, sig), equity=equity, state=fresh_state
+            )
         elif sig.strategy_id == "long_put":
-            exec_result = executor.submit_long_put(cast(LongPutSignal, sig), equity=equity, state=fresh_state)
+            exec_result = executor.submit_long_put(
+                cast(LongPutSignal, sig), equity=equity, state=fresh_state
+            )
         else:
-            exec_result = executor.submit_long_call(cast(LongCallSignal, sig), equity=equity, state=fresh_state)
+            exec_result = executor.submit_long_call(
+                cast(LongCallSignal, sig), equity=equity, state=fresh_state
+            )
         if exec_result.accepted:
             submitted += 1
         else:
@@ -246,14 +274,18 @@ def run_once(
                 break
             fresh_state = risk.load_state()
             exec_result = executor.submit_bull_put_spread(
-                sig, equity=equity, state=fresh_state,
+                sig,
+                equity=equity,
+                state=fresh_state,
                 short_put_symbol=sig.short_put_symbol,
                 long_put_symbol=sig.long_put_symbol,
             )
             if exec_result.accepted:
                 submitted += 1
             else:
-                reasons.append(f"BPCS {sig.short_strike}/{sig.long_strike}:{exec_result.reason[:30]}")
+                reasons.append(
+                    f"BPCS {sig.short_strike}/{sig.long_strike}:{exec_result.reason[:30]}"
+                )
                 if "kill_switch" in exec_result.reason:
                     log.warning("kill switch tripped — stopping scan cycle")
                     break
@@ -324,26 +356,38 @@ def main() -> int:
 
     if args.config_check:
         log.info("Settings loaded:")
-        log.info("  phase=%s, live=%s, is_live_mode=%s",
-                 settings.phase, settings.live_trade_enabled, settings.is_live())
-        log.info("  paper creds: %s, live creds: %s",
-                 "set" if settings.has_paper_creds() else "MISSING",
-                 "set" if settings.has_live_creds() else "MISSING")
-        log.info("  run_dir=%s, dashboard_port=%s",
-                 settings.run_dir, settings.dashboard_port)
-        log.info("  throughput: max_positions=%s, max_submissions_per_scan=%s, scan_interval=%ss",
-                 settings.max_positions, settings.max_submissions_per_scan, settings.scan_interval_s)
-        log.info("  high_reward=%s ladder=%s max_contract=$%s",
-                 settings.long_option_high_reward_mode,
-                 settings.long_option_otm_ladder_pct,
-                 settings.max_contract_dollar)
-        log.info("  yfinance_1dte_confirm=%s min_dte=%s strict=%s current_trade_date_volume_bonus=%s",
-                 settings.yfinance_confirm_1dte_enabled,
-                 settings.yfinance_confirm_min_dte,
-                 settings.yfinance_strict_gate,
-                 settings.yfinance_require_current_trade_date_for_volume_bonus)
-        log.info("  strategies enabled: %s",
-                 [s.strategy_id for s in enabled_strategies(settings)])
+        log.info(
+            "  phase=%s, live=%s, is_live_mode=%s",
+            settings.phase,
+            settings.live_trade_enabled,
+            settings.is_live(),
+        )
+        log.info(
+            "  paper creds: %s, live creds: %s",
+            "set" if settings.has_paper_creds() else "MISSING",
+            "set" if settings.has_live_creds() else "MISSING",
+        )
+        log.info("  run_dir=%s, dashboard_port=%s", settings.run_dir, settings.dashboard_port)
+        log.info(
+            "  throughput: max_positions=%s, max_submissions_per_scan=%s, scan_interval=%ss",
+            settings.max_positions,
+            settings.max_submissions_per_scan,
+            settings.scan_interval_s,
+        )
+        log.info(
+            "  high_reward=%s ladder=%s max_contract=$%s",
+            settings.long_option_high_reward_mode,
+            settings.long_option_otm_ladder_pct,
+            settings.max_contract_dollar,
+        )
+        log.info(
+            "  yfinance_1dte_confirm=%s min_dte=%s strict=%s current_trade_date_volume_bonus=%s",
+            settings.yfinance_confirm_1dte_enabled,
+            settings.yfinance_confirm_min_dte,
+            settings.yfinance_strict_gate,
+            settings.yfinance_require_current_trade_date_for_volume_bonus,
+        )
+        log.info("  strategies enabled: %s", [s.strategy_id for s in enabled_strategies(settings)])
         return 0
 
     if settings.is_live() and not settings.has_live_creds():
@@ -355,8 +399,12 @@ def main() -> int:
         return 2
 
     log.info("flip-options-bot daemon starting")
-    log.info("phase=%s, live=%s, watchlist=%s",
-             settings.phase, settings.live_trade_enabled, args.watchlist)
+    log.info(
+        "phase=%s, live=%s, watchlist=%s",
+        settings.phase,
+        settings.live_trade_enabled,
+        args.watchlist,
+    )
 
     # Wire components
     try:
@@ -400,8 +448,11 @@ def main() -> int:
         gate = harness.promotion_gate(settings.run_dir / "journal.db")
         log.info(
             "record-day: recorded=%s, days=%d/%d, eligible=%s reason=%s",
-            recorded, gate.market_days_recorded, gate.min_market_days,
-            gate.eligible, gate.reason,
+            recorded,
+            gate.market_days_recorded,
+            gate.min_market_days,
+            gate.eligible,
+            gate.reason,
         )
         print(harness.render_digest(settings.run_dir / "journal.db"))
         return 0
@@ -423,7 +474,8 @@ def main() -> int:
 
     log.info(
         "entering main loop, scan_interval=%ds, monitor_interval=%ds",
-        settings.scan_interval_s, settings.position_monitor_interval_s,
+        settings.scan_interval_s,
+        settings.position_monitor_interval_s,
     )
     try:
         while not stop_event.is_set():
@@ -467,8 +519,7 @@ def _monitor_loop(
     4. monitor.tick (SL/TP/trailing/EOD)
     5. reconcile_fills (canonical broker fills)
     """
-    log.info("position-monitor thread started (interval=%ds)",
-             settings.position_monitor_interval_s)
+    log.info("position-monitor thread started (interval=%ds)", settings.position_monitor_interval_s)
     while not stop_event.is_set():
         try:
             state = risk.load_state()
@@ -490,13 +541,20 @@ def _monitor_loop(
             if n_cancelled:
                 log.warning("stale-order cleanup: %d orders cancelled", n_cancelled)
 
+            # === Broker-canonical fill reconciliation before monitor ===
+            # Prevent a fast-filled close from disappearing from open orders
+            # while the journal still looks open.
+            executor.reconcile_fills()
+
             # === Per-position monitor ===
             tick = monitor.tick(state)
             if tick.closes_triggered:
                 log.warning(
                     "monitor tick closed %d positions (%s)",
-                    tick.closes_triggered, tick.reasons,
+                    tick.closes_triggered,
+                    tick.reasons,
                 )
+            executor.reconcile_fills()
             if consecutive_failures is not None:
                 consecutive_failures[0] = 0
         except Exception as e:

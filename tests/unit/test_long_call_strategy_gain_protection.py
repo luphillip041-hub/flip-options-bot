@@ -41,7 +41,7 @@ def test_compute_conviction_blocks_exhausted_momentum():
     """direction_move positive but short_momentum negative → exhaustion → 0."""
     f = _f()
     c = compute_conviction(
-        direction_move=0.01,    # +1% over 20min (good)
+        direction_move=0.01,  # +1% over 20min (good)
         vwap_extension=0.005,
         short_momentum=-0.001,  # -0.1% in last 5min (dying)
         spread_pct=0.05,
@@ -81,10 +81,10 @@ def test_compute_conviction_perfect_setup():
     """max direction, tight vwap, big momentum, tight spread → conviction = 1.0."""
     f = _f()
     c = compute_conviction(
-        direction_move=0.10,    # way above 0.003 threshold
-        vwap_extension=0.001,   # way below 0.020 threshold
-        short_momentum=0.05,    # way above 0.001 threshold
-        spread_pct=0.03,        # below 0.05 → 1.0 spread_score
+        direction_move=0.10,  # way above 0.003 threshold
+        vwap_extension=0.001,  # way below 0.020 threshold
+        short_momentum=0.05,  # way above 0.001 threshold
+        spread_pct=0.03,  # below 0.05 → 1.0 spread_score
         filters=f,
     )
     # weighted mean of (1.0, 1.0, 1.0, 1.0) = 1.0

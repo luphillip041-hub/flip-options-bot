@@ -18,7 +18,7 @@ if str(_BOT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_BOT_ROOT / "src"))
 
 from flip_options_bot.config import get_settings  # noqa: E402
-from flip_options_bot.market_time import is_weekday, now_utc, to_et  # noqa: E402
+from flip_options_bot.market_time import now_utc, to_et  # noqa: E402
 from flip_options_bot.observation import ObservationHarness  # noqa: E402
 from flip_options_bot.risk import RiskEngine  # noqa: E402
 
@@ -46,6 +46,7 @@ def main() -> int:
     if not args.force:
         # Cheap weekday check from the date string itself
         from datetime import date
+
         wd = date.fromisoformat(target).weekday()
         if wd >= 5:
             print(f"{target} is a weekend — skipping (use --force to override)")

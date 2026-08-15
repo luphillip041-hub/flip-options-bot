@@ -10,27 +10,31 @@ from flip_options_bot.observation import ObservationHarness
 
 def _record_win(journal: Journal, symbol: str, pnl: float) -> None:
     pos_id = Journal.new_position_id()
-    journal.append(TradeEvent(
-        event_id=f"open-{pos_id}",
-        ts=Journal.now_iso(),
-        kind="open",
-        symbol=symbol,
-        side="buy",
-        qty=1,
-        price=2.50,
-        position_id=pos_id,
-    ))
-    journal.append(TradeEvent(
-        event_id=f"close-{pos_id}",
-        ts=Journal.now_iso(),
-        kind="close",
-        symbol=symbol,
-        side="sell",
-        qty=1,
-        price=2.50 + pnl,
-        position_id=pos_id,
-        realized_pnl=pnl,
-    ))
+    journal.append(
+        TradeEvent(
+            event_id=f"open-{pos_id}",
+            ts=Journal.now_iso(),
+            kind="open",
+            symbol=symbol,
+            side="buy",
+            qty=1,
+            price=2.50,
+            position_id=pos_id,
+        )
+    )
+    journal.append(
+        TradeEvent(
+            event_id=f"close-{pos_id}",
+            ts=Journal.now_iso(),
+            kind="close",
+            symbol=symbol,
+            side="sell",
+            qty=1,
+            price=2.50 + pnl,
+            position_id=pos_id,
+            realized_pnl=pnl,
+        )
+    )
 
 
 def test_record_market_day_appends(tmp_path: Path) -> None:

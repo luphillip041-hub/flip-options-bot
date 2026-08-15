@@ -38,6 +38,7 @@ from ..config import Settings
 @dataclass
 class BPCSFilters:
     """Filter set for BPCS, sourced from Settings."""
+
     target_dte: int
     min_dte: int
     max_dte: int
@@ -142,7 +143,7 @@ def select_strikes(
     if spot <= 0:
         return None
     short_target = spot * 0.98  # ~2% OTM
-    long_target = spot * 0.96   # ~4% OTM
+    long_target = spot * 0.96  # ~4% OTM
 
     if available_strikes:
         # Snap to closest available strike ≤ target
@@ -151,7 +152,7 @@ def select_strikes(
         if not short_candidates or not long_candidates:
             return None
         short_strike = max(short_candidates)  # closest strike ≤ target
-        long_strike = max(long_candidates)    # closest strike ≤ target
+        long_strike = max(long_candidates)  # closest strike ≤ target
         # long_strike must be < short_strike
         if long_strike >= short_strike:
             return None
@@ -224,8 +225,4 @@ def compute_bpcs_conviction(
     rr_score = min(1.0, (credit / spread_width) * 3) if spread_width > 0 else 0
 
     weights = [0.40, 0.30, 0.30]
-    return (
-        weights[0] * dir_score
-        + weights[1] * iv_score
-        + weights[2] * rr_score
-    )
+    return weights[0] * dir_score + weights[1] * iv_score + weights[2] * rr_score

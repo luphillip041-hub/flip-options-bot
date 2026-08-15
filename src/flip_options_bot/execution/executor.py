@@ -70,21 +70,39 @@ class Executor:
         if signal.strategy_id not in {"long_call", "long_put"}:
             return ExecutionResult(accepted=False, reason=f"unknown strategy {signal.strategy_id}")
         underlying = self._occ_underlying(signal.symbol)
-        if underlying and self._has_open_directional_underlying(underlying):
-            reason = f"duplicate_directional_underlying:{underlying}"
+        pending_entries = self._pending_directional_entry_underlyings()
+        if pending_entries is None:
+            reason = "pending_entry_reservation_unavailable"
             log.info("risk denied %s: %s", signal.symbol, reason)
             return ExecutionResult(accepted=False, reason=reason)
-        lockout = float(getattr(self.settings, "directional_underlying_loss_lockout_dollar", 0.0) or 0.0)
+        lockout = float(
+            getattr(self.settings, "directional_underlying_loss_lockout_dollar", 0.0) or 0.0
+        )
         if underlying and lockout > 0:
             realized = self._directional_underlying_realized_today(underlying)
             if realized <= -abs(lockout):
                 reason = f"directional_underlying_loss_lockout:{underlying}:{realized:.2f}"
                 log.info("risk denied %s: %s", signal.symbol, reason)
                 return ExecutionResult(accepted=False, reason=reason)
+        if underlying and (
+            self._has_open_directional_underlying(underlying) or underlying in pending_entries
+        ):
+            reason = f"duplicate_directional_underlying:{underlying}"
+            log.info("risk denied %s: %s", signal.symbol, reason)
+            return ExecutionResult(accepted=False, reason=reason)
+        pending_count = len(pending_entries)
+        if state.open_position_count + pending_count >= self.settings.max_positions:
+            reason = (
+                f"max_positions_with_pending: {state.open_position_count}+{pending_count} >= "
+                f"{self.settings.max_positions}"
+            )
+            log.info("risk denied %s: %s", signal.symbol, reason)
+            return ExecutionResult(accepted=False, reason=reason)
+        reserved_state = self._state_with_pending_entries(state, pending_count)
 
         # === Risk gate ===
         decision = self.risk.evaluate_pre_trade(
-            state, equity=equity, proposed_debit=signal.limit_price
+            reserved_state, equity=equity, proposed_debit=signal.limit_price
         )
         if not decision.allowed:
             log.info("risk denied %s: %s", signal.symbol, decision.reason)
@@ -451,6 +469,47 @@ class Executor:
         match = re.match(r"^([A-Z]+)\d{6}[CP]\d{8}$", contract_symbol or "")
         return match.group(1) if match else ""
 
+    def _state_with_pending_entries(self, state: RiskState, pending_count: int) -> RiskState:
+        if pending_count <= 0:
+            return state
+        return RiskState(
+            daily_pnl=state.daily_pnl,
+            weekly_pnl=state.weekly_pnl,
+            last_reset_day=state.last_reset_day,
+            last_reset_week=state.last_reset_week,
+            kill_switch=state.kill_switch,
+            kill_reason=state.kill_reason,
+            open_position_count=state.open_position_count + pending_count,
+            realized_pnl_total=state.realized_pnl_total,
+            updated_at=state.updated_at,
+        )
+
+    def _pending_directional_entry_underlyings(self) -> set[str] | None:
+        """Bot-owned open BUY orders that reserve directional capacity.
+
+        A broker-accepted BUY that is not journaled yet is still exposure. If
+        open-order truth is unavailable, fail closed rather than double-submit.
+        """
+        try:
+            if hasattr(self.broker, "list_open_orders_or_raise"):
+                orders = self.broker.list_open_orders_or_raise()
+            else:
+                orders = self.broker.list_open_orders()
+        except Exception as exc:
+            log.warning("could not inspect pending entry orders: %s", exc)
+            return None
+        underlyings: set[str] = set()
+        for order in orders or []:
+            coid = str(getattr(order, "client_order_id", "") or "")
+            side = str(getattr(order, "side", "") or "").lower()
+            symbol = str(getattr(order, "symbol", "") or "")
+            if not coid.startswith("open-") or "buy" not in side:
+                continue
+            underlying = self._occ_underlying(symbol)
+            if underlying:
+                underlyings.add(underlying)
+        return underlyings
+
     def _has_open_directional_underlying(self, underlying: str) -> bool:
         """Avoid stacking same-underlying long premium positions.
 
@@ -476,14 +535,20 @@ class Executor:
         with sqlite3.connect(self.journal.db_path) as conn:
             rows = conn.execute(
                 """
-                SELECT symbol, strategy_id, realized_pnl
-                FROM positions
-                WHERE state = 'closed' AND closed_at IS NOT NULL AND closed_at >= ?
+                SELECT symbol, strategy_id, realized_pnl, raw_broker_fill
+                FROM trades
+                WHERE kind = 'close' AND ts >= ?
                 """,
                 (day_start_utc.isoformat(),),
             ).fetchall()
-        for symbol, strategy_id, realized_pnl in rows:
+        for symbol, strategy_id, realized_pnl, raw in rows:
             if strategy_id not in {"long_call", "long_put"}:
+                continue
+            try:
+                payload = json.loads(raw) if isinstance(raw, str) and raw else {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {}
+            if payload.get("fill_source") != "broker":
                 continue
             if self._occ_underlying(str(symbol or "")) == underlying:
                 total += float(realized_pnl or 0.0)
@@ -549,7 +614,14 @@ class Executor:
             if not coid:
                 continue
             existing = self.journal.get_event(coid)
-            if existing and existing.get("kind") in ("open", "close", "close_attempt", "open_spread", "close_spread"):
+            if existing and existing.get("kind") in (
+                "open",
+                "close",
+                "close_attempt",
+                "open_spread",
+                "close_spread",
+                "close_spread_attempt",
+            ):
                 raw = existing.get("raw_broker_fill") or "{}"
                 try:
                     raw_payload = json.loads(raw) if isinstance(raw, str) else dict(raw)
@@ -574,6 +646,8 @@ class Executor:
                 kind = str(existing["kind"])
                 if kind == "close_attempt":
                     kind = "close"
+                elif kind == "close_spread_attempt":
+                    kind = "close_spread"
                 realized_pnl = float(existing.get("realized_pnl") or 0.0)
                 strategy_id = str(existing.get("strategy_id") or "")
                 if kind == "close_spread":
@@ -633,8 +707,7 @@ class Executor:
                     if row:
                         avg_entry = float(row.get("avg_entry_price") or 0)
                         qty = int(order.filled_qty) if order.filled_qty else 1
-                        sign = -1 if side_str == "sell" else 1  # sell closes long → negative diff
-                        realized_pnl = (fill_price - avg_entry) * qty * 100 * sign
+                        realized_pnl = (fill_price - avg_entry) * qty * 100
 
             event = TradeEvent(
                 event_id=coid,
@@ -645,7 +718,11 @@ class Executor:
                 qty=int(order.filled_qty) if order.filled_qty else 0,
                 price=fill_price,
                 position_id=position_id,
-                strategy_id="long_call",
+                strategy_id=(
+                    str(self.journal.get_position_for_id(position_id).get("strategy_id") or "")
+                    if position_id and self.journal.get_position_for_id(position_id)
+                    else ""
+                ),
                 realized_pnl=realized_pnl,
                 raw_broker_fill={
                     "order_id": str(order.id),
@@ -708,7 +785,9 @@ class Executor:
             if event:
                 kind = str(event.get("kind") or "")
                 side = str(getattr(order, "side", "")).upper()
-                is_pending_close = kind == "close_attempt" and side.endswith("SELL")
+                is_pending_close = (kind == "close_attempt" and side.endswith("SELL")) or (
+                    kind == "close_spread_attempt" and side.endswith("BUY")
+                )
                 if not is_pending_close:
                     # Filled/journaled opens must not be cancelled here. A
                     # close_attempt is different: it is an unfilled exit intent,

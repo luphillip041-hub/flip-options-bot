@@ -185,6 +185,7 @@ def test_journal_idempotent_on_close_event_id(tmp_path: Path) -> None:
 
     # Reading the canonical row from the trades table must show 2.76, not 2.75.
     import sqlite3
+
     with sqlite3.connect(journal.db_path) as conn:
         rows = conn.execute(
             "SELECT price, realized_pnl FROM trades WHERE event_id = ?",

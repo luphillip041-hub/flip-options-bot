@@ -92,9 +92,17 @@ def compute_conviction(
 
     down_move = abs(direction_move)
     down_momentum = abs(short_momentum)
-    dir_score = 1.0 if down_move >= filters.min_direction_move_pct else down_move / filters.min_direction_move_pct
+    dir_score = (
+        1.0
+        if down_move >= filters.min_direction_move_pct
+        else down_move / filters.min_direction_move_pct
+    )
     vwap_score = 1.0 if vwap_extension <= filters.max_vwap_extension_pct else 0.0
-    mom_score = 1.0 if down_momentum >= filters.min_short_momentum_pct else down_momentum / filters.min_short_momentum_pct
+    mom_score = (
+        1.0
+        if down_momentum >= filters.min_short_momentum_pct
+        else down_momentum / filters.min_short_momentum_pct
+    )
     spread_score = max(0.0, 1.0 - max(0.0, (spread_pct - 0.05) / 0.15))
 
     weights = [0.30, 0.20, 0.30, 0.20]

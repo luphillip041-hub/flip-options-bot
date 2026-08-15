@@ -144,7 +144,9 @@ def test_per_trade_risk_enforced(tmp_path: Path):
 def test_max_contract_dollar_enforced(engine: RiskEngine):
     """per_contract debit * 100 > max_contract_dollar."""
     state = RiskState()
-    decision = engine.evaluate_pre_trade(state, equity=10_000.0, proposed_debit=6.0)  # 6*100 = 600 > 500
+    decision = engine.evaluate_pre_trade(
+        state, equity=10_000.0, proposed_debit=6.0
+    )  # 6*100 = 600 > 500
     assert decision.allowed is False
     assert "max_contract_dollar" in decision.reason
 
@@ -154,7 +156,9 @@ def test_event_log_persists(engine: RiskEngine, tmp_path: Path):
     engine.record_event("ev-1", "open", pnl=-2.50, payload="SPY260815C00770000")
     engine.record_event("ev-1", "open", pnl=-2.50, payload="SPY260815C00770000")  # dup
     with sqlite3.connect(engine.db_path) as conn:
-        count = conn.execute("SELECT COUNT(*) FROM risk_events WHERE event_id = ?", ("ev-1",)).fetchone()[0]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM risk_events WHERE event_id = ?", ("ev-1",)
+        ).fetchone()[0]
     assert count == 1
 
 

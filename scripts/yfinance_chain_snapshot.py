@@ -14,7 +14,7 @@ import csv
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -123,7 +123,9 @@ def _candidate_from_row(
         mid = (bid + ask) / 2
         spread = ask - bid
         spread_pct = spread / max(mid, 0.01)
-        max_spread = settings.long_option_max_spread_pct if settings.long_option_high_reward_mode else 0.50
+        max_spread = (
+            settings.long_option_max_spread_pct if settings.long_option_high_reward_mode else 0.50
+        )
         if spread_pct > max_spread:
             return None
         entry_limit = round(mid + 0.25 * spread, 2)
@@ -189,7 +191,7 @@ def collect(
 
     load_dotenv("/root/.config/flip-options-bot/.env", override=True)
     settings = get_settings()
-    snapshot_ts = datetime.now(timezone.utc).isoformat()
+    snapshot_ts = datetime.now(UTC).isoformat()
     candidates: list[ChainCandidate] = []
     coverage: dict[str, dict] = {}
     for symbol in symbols:
@@ -200,7 +202,12 @@ def collect(
             coverage[symbol] = {"error": f"options_fetch_failed:{exc}"}
             continue
         spot = _spot(t)
-        coverage[symbol] = {"expiries_seen": len(expiries), "spot": spot, "rows": 0, "candidates": 0}
+        coverage[symbol] = {
+            "expiries_seen": len(expiries),
+            "spot": spot,
+            "rows": 0,
+            "candidates": 0,
+        }
         if not spot:
             coverage[symbol]["error"] = "missing_spot"
             continue
@@ -236,10 +243,23 @@ def collect(
                     if candidate:
                         side_buckets[side].append(candidate)
         for side in ("call", "put"):
-            target = max(settings.long_option_otm_ladder_pct) if settings.long_option_high_reward_mode else (
-                settings.long_call_target_otm_pct if side == "call" else settings.long_put_target_otm_pct
+            target = (
+                max(settings.long_option_otm_ladder_pct)
+                if settings.long_option_high_reward_mode
+                else (
+                    settings.long_call_target_otm_pct
+                    if side == "call"
+                    else settings.long_put_target_otm_pct
+                )
             )
-            side_buckets[side].sort(key=lambda c: (c.score, -abs(c.otm_pct - target), -abs(c.dte - settings.target_dte)), reverse=True)
+            side_buckets[side].sort(
+                key=lambda c: (
+                    c.score,
+                    -abs(c.otm_pct - target),
+                    -abs(c.dte - settings.target_dte),
+                ),
+                reverse=True,
+            )
             candidates.extend(side_buckets[side][:per_symbol_side])
         coverage[symbol]["candidates"] = sum(1 for c in candidates if c.underlying == symbol)
     candidates.sort(key=lambda c: c.score, reverse=True)
@@ -277,7 +297,7 @@ def main() -> int:
         args.per_symbol_side,
         allow_last_price_proxy=not args.no_last_price_proxy,
     )
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "candidates.csv"
@@ -290,15 +310,25 @@ def main() -> int:
         for c in candidates:
             writer.writerow(asdict(c))
     json_path.write_text(json.dumps([asdict(c) for c in candidates], indent=2, sort_keys=True))
-    manifest["artifacts"] = {"csv": str(csv_path), "json": str(json_path), "manifest": str(manifest_path)}
+    manifest["artifacts"] = {
+        "csv": str(csv_path),
+        "json": str(json_path),
+        "manifest": str(manifest_path),
+    }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
-    print(json.dumps({
-        "candidate_count": len(candidates),
-        "top": [asdict(c) for c in candidates[:20]],
-        "coverage": manifest["coverage"],
-        "artifacts": manifest["artifacts"],
-        "limitations": manifest["limitations"],
-    }, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "candidate_count": len(candidates),
+                "top": [asdict(c) for c in candidates[:20]],
+                "coverage": manifest["coverage"],
+                "artifacts": manifest["artifacts"],
+                "limitations": manifest["limitations"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

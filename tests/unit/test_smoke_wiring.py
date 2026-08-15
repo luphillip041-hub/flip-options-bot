@@ -82,7 +82,9 @@ def test_daemon_config_check_succeeds(tmp_path: Path, monkeypatch) -> None:
 
     result = subprocess.run(
         [
-            str(venv_python), "-m", "flip_options_bot.daemon",
+            str(venv_python),
+            "-m",
+            "flip_options_bot.daemon",
             "--config-check",
         ],
         cwd=tmp_path,

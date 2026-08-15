@@ -56,23 +56,32 @@ def _wire_monitor(tmp_path: Path):
     return monitor, journal, closer
 
 
-def _open_position(journal: Journal, symbol: str, qty: int, avg_entry: float,
-                   qty_closed: int = 0, peak_mark: float | None = None) -> str:
+def _open_position(
+    journal: Journal,
+    symbol: str,
+    qty: int,
+    avg_entry: float,
+    qty_closed: int = 0,
+    peak_mark: float | None = None,
+) -> str:
     """Helper: open a position with given entry, return position_id."""
     from flip_options_bot.journal.journal import TradeEvent
+
     pos_id = Journal.new_position_id()
-    journal.upsert(TradeEvent(
-        event_id=f"open-{pos_id}",
-        ts="2026-08-11T15:00:00+00:00",
-        kind="open",
-        symbol=symbol,
-        side="buy",
-        qty=qty,
-        price=avg_entry,
-        position_id=pos_id,
-        strategy_id="long_call",
-        raw_broker_fill={"order_id": f"order-{pos_id}"},
-    ))
+    journal.upsert(
+        TradeEvent(
+            event_id=f"open-{pos_id}",
+            ts="2026-08-11T15:00:00+00:00",
+            kind="open",
+            symbol=symbol,
+            side="buy",
+            qty=qty,
+            price=avg_entry,
+            position_id=pos_id,
+            strategy_id="long_call",
+            raw_broker_fill={"order_id": f"order-{pos_id}"},
+        )
+    )
     if qty_closed > 0 or peak_mark is not None:
         with __import__("sqlite3").connect(journal.db_path) as conn:
             conn.execute(
@@ -112,17 +121,19 @@ def test_broker_open_order_failure_uses_journal_close_attempt_guard(tmp_path: Pa
     pos_id = _open_position(journal, symbol, qty=2, avg_entry=1.00)
     from flip_options_bot.journal.journal import TradeEvent
 
-    journal.append(TradeEvent(
-        event_id="close-existing",
-        ts="2026-08-11T15:01:00+00:00",
-        kind="close_attempt",
-        symbol=symbol,
-        side="sell",
-        qty=2,
-        price=0.40,
-        position_id=pos_id,
-        raw_broker_fill={"close_position_id": pos_id},
-    ))
+    journal.append(
+        TradeEvent(
+            event_id="close-existing",
+            ts="2026-08-11T15:01:00+00:00",
+            kind="close_attempt",
+            symbol=symbol,
+            side="sell",
+            qty=2,
+            price=0.40,
+            position_id=pos_id,
+            raw_broker_fill={"close_position_id": pos_id},
+        )
+    )
     monitor.broker.list_open_orders = MagicMock(side_effect=RuntimeError("broker unavailable"))
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=0.40, ask=0.40))
 
@@ -133,6 +144,7 @@ def test_broker_open_order_failure_uses_journal_close_attempt_guard(tmp_path: Pa
 
 
 # ===== SL =====
+
 
 def test_sl_fires_at_50pct_full_exit(tmp_path: Path):
     """SL: mark = 40% of entry → exit full position."""
@@ -152,6 +164,7 @@ def test_sl_fires_at_50pct_full_exit(tmp_path: Path):
 
 
 # ===== TP partial =====
+
 
 def test_tp_partial_at_50pct_sells_half(tmp_path: Path):
     """TP partial at +50%: entry $1, mark $1.50, qty=2 → sell 1, lock $50 gain."""
@@ -184,21 +197,22 @@ def test_tp_partial_odd_qty_rounds_up(tmp_path: Path):
 
 # ===== Min profit dollar =====
 
+
 def test_min_profit_dollar_blocks_tp_at_wash(tmp_path: Path):
     """TP would fire at $1.50 but only $50 per contract — 1 contract = $50 profit.
     Set min_tp_profit to $100. Should NOT fire.
     """
     settings = Settings(
-        phase="paper", live_trade_enabled=False, run_dir=tmp_path,
+        phase="paper",
+        live_trade_enabled=False,
+        run_dir=tmp_path,
         min_tp_profit_dollar=100.0,
     )
     journal = Journal(tmp_path)
     risk = MagicMock()
     broker = MagicMock()
     closer = MagicMock()
-    closer.flatten_position = MagicMock(
-        return_value=ExecutionResult(accepted=True)
-    )
+    closer.flatten_position = MagicMock(return_value=ExecutionResult(accepted=True))
     monitor = PositionMonitor(settings, broker, journal, risk, closer)
 
     _open_position(journal, "SPY260815C00750000", qty=1, avg_entry=1.00)
@@ -213,16 +227,16 @@ def test_min_profit_dollar_blocks_tp_at_wash(tmp_path: Path):
 def test_min_profit_dollar_passes_with_qty_2(tmp_path: Path):
     """Same scenario but qty=2 → $100 profit at mark=$1.50 → TP fires."""
     settings = Settings(
-        phase="paper", live_trade_enabled=False, run_dir=tmp_path,
+        phase="paper",
+        live_trade_enabled=False,
+        run_dir=tmp_path,
         min_tp_profit_dollar=100.0,
     )
     journal = Journal(tmp_path)
     risk = MagicMock()
     broker = MagicMock()
     closer = MagicMock()
-    closer.flatten_position = MagicMock(
-        return_value=ExecutionResult(accepted=True)
-    )
+    closer.flatten_position = MagicMock(return_value=ExecutionResult(accepted=True))
     monitor = PositionMonitor(settings, broker, journal, risk, closer)
 
     _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00)
@@ -233,6 +247,7 @@ def test_min_profit_dollar_passes_with_qty_2(tmp_path: Path):
 
 
 # ===== TP full =====
+
 
 def test_single_contract_runner_uses_full_tp_not_partial(tmp_path: Path):
     """Single-contract winners are runners: no fake partial on a 1-lot."""
@@ -265,15 +280,14 @@ def test_tp_full_only_after_no_partial(tmp_path: Path):
 
 # ===== Trailing floor =====
 
+
 def test_trailing_floor_never_gives_gains_back_to_entry(tmp_path: Path):
     """Peak was +10% (peak_mark=1.10). Mark drops to entry (1.00).
     retention=0.50 means target=0.55, profit_floor=1.10 means floor=1.10.
     We use max(retention, profit_floor) = 1.10.
     Mark=1.00 < 1.10 → trailing_floor fires."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    _open_position(
-        journal, "SPY260815C00750000", qty=1, avg_entry=1.00, peak_mark=1.10
-    )
+    _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00, peak_mark=1.10)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.00, ask=1.00))
     tick = monitor.tick(RiskState())
@@ -287,9 +301,7 @@ def test_trailing_floor_respects_higher_peak_retention(tmp_path: Path):
     """Peak was +200% (peak=3.00). Trailing floor target=1.50. But mark=1.50
     also hits +50% tp_partial → tp_partial wins (priority)."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    _open_position(
-        journal, "SPY260815C00750000", qty=2, avg_entry=1.00, peak_mark=3.00
-    )
+    _open_position(journal, "SPY260815C00750000", qty=2, avg_entry=1.00, peak_mark=3.00)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.50, ask=1.50))
     tick = monitor.tick(RiskState())
@@ -301,8 +313,12 @@ def test_runner_trailing_floor_after_partial_taken(tmp_path: Path):
     """After partial taken, remaining contracts use moonshot runner floor."""
     monitor, journal, closer = _wire_monitor(tmp_path)
     _open_position(
-        journal, "SPY260815C00750000", qty=2, avg_entry=1.00,
-        qty_closed=1, peak_mark=3.00,
+        journal,
+        "SPY260815C00750000",
+        qty=2,
+        avg_entry=1.00,
+        qty_closed=1,
+        peak_mark=3.00,
     )
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=1.50, ask=1.50))
@@ -362,7 +378,7 @@ def test_trailing_floor_retains_percent_of_gain_not_peak_price(tmp_path: Path):
     _open_position(
         journal,
         "SPY260815C00750000",
-        qty=1,
+        qty=2,
         avg_entry=1.00,
         peak_mark=1.50,
     )
@@ -392,9 +408,7 @@ def test_fixed_profit_floor_never_exceeds_observed_peak(tmp_path: Path):
 def test_trailing_floor_not_armed_when_gain_below_threshold(tmp_path: Path):
     """Peak gain was only +5% (< arm_pct=10%). No trailing floor."""
     monitor, journal, closer = _wire_monitor(tmp_path)
-    _open_position(
-        journal, "SPY260815C00750000", qty=1, avg_entry=1.00, peak_mark=1.05
-    )
+    _open_position(journal, "SPY260815C00750000", qty=1, avg_entry=1.00, peak_mark=1.05)
 
     monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=0.80, ask=0.80))
     tick = monitor.tick(RiskState())
@@ -404,6 +418,7 @@ def test_trailing_floor_not_armed_when_gain_below_threshold(tmp_path: Path):
 
 
 # ===== Exit price =====
+
 
 def test_exit_price_tp_uses_mark_no_slippage(tmp_path: Path):
     """TP exit price = mark (we never accept below mark for gain-capture)."""

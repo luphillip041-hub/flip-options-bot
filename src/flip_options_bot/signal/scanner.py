@@ -122,9 +122,15 @@ class Scanner:
                 if self.settings.long_call_enabled:
                     signals.extend(self._scan_symbol(symbol, filters, now))
                 if self.settings.long_put_enabled:
-                    signals.extend(self._scan_long_put_symbol(symbol, make_put_filters(self.settings), now))
+                    signals.extend(
+                        self._scan_long_put_symbol(symbol, make_put_filters(self.settings), now)
+                    )
                 if self.settings.long_equity_enabled and not signals:
-                    signals.extend(self._scan_long_equity_symbol(symbol, make_equity_filters(self.settings), now))
+                    signals.extend(
+                        self._scan_long_equity_symbol(
+                            symbol, make_equity_filters(self.settings), now
+                        )
+                    )
             except Exception as e:
                 log.warning("scan failed for %s: %s", symbol, e)
                 row.chains_failed.append(symbol)
@@ -214,7 +220,9 @@ class Scanner:
         # Pick expiry closest to target_dte
         expiry_gte = (now + timedelta(days=filters.min_dte)).strftime("%Y-%m-%d")
         expiry_lte = (now + timedelta(days=filters.max_dte)).strftime("%Y-%m-%d")
-        contracts = self.broker.list_option_contracts(symbol, expiry_gte, expiry_lte, option_type="put")
+        contracts = self.broker.list_option_contracts(
+            symbol, expiry_gte, expiry_lte, option_type="put"
+        )
         if not contracts:
             return signals
         expiry_set = sorted({c["expiry"] for c in contracts})
@@ -235,7 +243,8 @@ class Scanner:
 
         # Find the matching put contracts (need short put + long put same expiry)
         eligible_puts = [
-            c for c in contracts
+            c
+            for c in contracts
             if c["expiry"] == expiry
             and c["type"] == "put"
             and c["open_interest"] > 0
@@ -276,7 +285,9 @@ class Scanner:
             return signals
 
         # Vol regime: BPCS wants rich vol. Use short-put IV width proxy.
-        spread_pct = (float(short_snap["ask"]) - float(short_snap["bid"])) / max((float(short_snap["bid"]) + float(short_snap["ask"])) / 2, 0.01)
+        spread_pct = (float(short_snap["ask"]) - float(short_snap["bid"])) / max(
+            (float(short_snap["bid"]) + float(short_snap["ask"])) / 2, 0.01
+        )
         # For BPCS we tolerate wider spreads (we're a seller, not buyer)
         if spread_pct > 0.40:  # 40% cap — stricter than long_call
             return signals
@@ -306,24 +317,31 @@ class Scanner:
         # and mid + 25% spread above mid for long put (to get a fill).
         # These are intentionally aggressive (a tiny bit over mid) so
         # the spread fills within a few minutes in paper.
-        short_put_price = round(float(short_snap["bid"]) + 0.50 * (float(short_snap["ask"]) - float(short_snap["bid"])), 2)
-        long_put_price = round(float(long_snap["ask"]) + 0.10 * (float(long_snap["ask"]) - float(long_snap["bid"])), 2)
-        signals.append(BullPutSpreadSignal(
-            short_strike=short_strike,
-            long_strike=long_strike,
-            expiry=expiry,
-            credit_estimate=credit,
-            max_loss_per_contract=max_loss_per_contract,
-            max_gain_per_contract=credit * 100,
-            pop=0.70,  # rough — short put at 30 delta has ~70% POP
-            conviction=conviction,
-            short_strike_price_estimate=short_put_price,
-            long_strike_price_estimate=long_put_price,
-            short_put_symbol=short_sym,
-            long_put_symbol=long_sym,
-            strategy_id="bull_put_credit_spread",
-            ts=now.isoformat(),
-        ))
+        short_put_price = round(
+            float(short_snap["bid"]) + 0.50 * (float(short_snap["ask"]) - float(short_snap["bid"])),
+            2,
+        )
+        long_put_price = round(
+            float(long_snap["ask"]) + 0.10 * (float(long_snap["ask"]) - float(long_snap["bid"])), 2
+        )
+        signals.append(
+            BullPutSpreadSignal(
+                short_strike=short_strike,
+                long_strike=long_strike,
+                expiry=expiry,
+                credit_estimate=credit,
+                max_loss_per_contract=max_loss_per_contract,
+                max_gain_per_contract=credit * 100,
+                pop=0.70,  # rough — short put at 30 delta has ~70% POP
+                conviction=conviction,
+                short_strike_price_estimate=short_put_price,
+                long_strike_price_estimate=long_put_price,
+                short_put_symbol=short_sym,
+                long_put_symbol=long_sym,
+                strategy_id="bull_put_credit_spread",
+                ts=now.isoformat(),
+            )
+        )
         return signals
 
     # ===== Internals =====
@@ -350,7 +368,9 @@ class Scanner:
 
         expiry_gte = (now + timedelta(days=filters.min_dte)).strftime("%Y-%m-%d")
         expiry_lte = (now + timedelta(days=filters.max_dte)).strftime("%Y-%m-%d")
-        contracts = self.broker.list_option_contracts(symbol, expiry_gte, expiry_lte, option_type="put")
+        contracts = self.broker.list_option_contracts(
+            symbol, expiry_gte, expiry_lte, option_type="put"
+        )
         if not contracts:
             return signals
 
@@ -364,7 +384,8 @@ class Scanner:
             target_otm_pct = self._target_otm_pct(filters.target_otm_pct)
             target_strike = spot * (1.0 - target_otm_pct)
             eligible = [
-                c for c in contracts
+                c
+                for c in contracts
                 if c["expiry"] == expiry and c["type"] == "put" and c["open_interest"] > 0
             ]
             if not eligible:
@@ -481,15 +502,17 @@ class Scanner:
         qty = int(filters.max_position_dollar / max(entry_price, 0.01))
         if qty <= 0:
             return signals
-        signals.append(LongEquitySignal(
-            symbol=symbol,
-            qty=qty,
-            limit_price=entry_price,
-            conviction=conviction,
-            stop_price=round(entry_price * (1.0 - filters.stop_loss_pct), 2),
-            take_profit_price=round(entry_price * (1.0 + filters.take_profit_pct), 2),
-            ts=now.isoformat(),
-        ))
+        signals.append(
+            LongEquitySignal(
+                symbol=symbol,
+                qty=qty,
+                limit_price=entry_price,
+                conviction=conviction,
+                stop_price=round(entry_price * (1.0 - filters.stop_loss_pct), 2),
+                take_profit_price=round(entry_price * (1.0 + filters.take_profit_pct), 2),
+                ts=now.isoformat(),
+            )
+        )
         return signals
 
     def _scan_symbol(
@@ -510,9 +533,7 @@ class Scanner:
             return signals
 
         # Compute features
-        direction_move, vwap_extension, short_momentum = self._compute_features(
-            bars, filters
-        )
+        direction_move, vwap_extension, short_momentum = self._compute_features(bars, filters)
 
         if direction_move < filters.min_direction_move_pct:
             return signals  # Fails the direction filter
@@ -538,9 +559,9 @@ class Scanner:
             target_otm_pct = self._target_otm_pct(filters.target_otm_pct)
             target_strike = spot * (1.0 + target_otm_pct)
             eligible = [
-                c for c in contracts
-                if c["expiry"] == expiry and c["type"] == "call"
-                and c["open_interest"] > 0
+                c
+                for c in contracts
+                if c["expiry"] == expiry and c["type"] == "call" and c["open_interest"] > 0
             ]
             if not eligible:
                 continue
@@ -632,10 +653,18 @@ class Scanner:
         return max(ladder) if ladder else base_target
 
     def _min_long_option_premium(self) -> float:
-        return self.settings.long_option_min_premium if self.settings.long_option_high_reward_mode else 0.0
+        return (
+            self.settings.long_option_min_premium
+            if self.settings.long_option_high_reward_mode
+            else 0.0
+        )
 
     def _max_long_option_spread_pct(self) -> float:
-        return self.settings.long_option_max_spread_pct if self.settings.long_option_high_reward_mode else 0.50
+        return (
+            self.settings.long_option_max_spread_pct
+            if self.settings.long_option_high_reward_mode
+            else 0.50
+        )
 
     @staticmethod
     def _otm_pct(side: Literal["call", "put"], strike: float, spot: float) -> float:
@@ -656,7 +685,9 @@ class Scanner:
         target_otm = max(self._target_otm_pct(filters.target_otm_pct), 0.0001)
         convexity_bonus = 0.0
         if self.settings.long_option_high_reward_mode:
-            convexity_bonus = min(otm_pct / target_otm, 1.0) * self.settings.long_option_convexity_weight
+            convexity_bonus = (
+                min(otm_pct / target_otm, 1.0) * self.settings.long_option_convexity_weight
+            )
         return (
             signal.conviction + convexity_bonus,
             -abs(signal.dte - filters.target_dte),
@@ -791,7 +822,7 @@ class Scanner:
 
     def _bars_are_current_session(self, bars: list[dict], filters, now: datetime) -> bool:
         """Fail closed unless the latest underlying bars are fresh regular-session evidence."""
-        recent = bars[-filters.directional_lookback_minutes:]
+        recent = bars[-filters.directional_lookback_minutes :]
         timestamps: list[datetime] = []
         for bar in recent:
             raw_ts = bar.get("t")
@@ -829,14 +860,12 @@ class Scanner:
             return None
         return out
 
-    def _compute_features(
-        self, bars: list[dict], filters
-    ) -> tuple[float, float, float]:
+    def _compute_features(self, bars: list[dict], filters) -> tuple[float, float, float]:
         """Compute direction move, vwap extension, short momentum from minute bars."""
         if len(bars) < filters.directional_lookback_minutes:
             return 0.0, 0.0, 0.0
         # Use the most recent lookback window
-        recent = bars[-filters.directional_lookback_minutes:]
+        recent = bars[-filters.directional_lookback_minutes :]
         closes = [self._positive_float(b.get("c")) for b in recent]
         highs = [self._positive_float(b.get("h")) for b in recent]
         lows = [self._positive_float(b.get("l")) for b in recent]

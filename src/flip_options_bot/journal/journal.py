@@ -38,6 +38,7 @@ class TradeEvent:
         "close",
         "open_attempt",
         "close_attempt",
+        "close_spread_attempt",
         "fill_partial",
         "open_spread",
         "close_spread",

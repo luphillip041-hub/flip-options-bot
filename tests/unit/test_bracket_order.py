@@ -98,9 +98,9 @@ def test_submit_bracket_buy_rounds_prices() -> None:
         contract_symbol="SPY260815C00770000",
         qty=1,
         limit_price=2.5555,  # rounds to 2.56
-        tp_price=3.1234,      # rounds to 3.12
+        tp_price=3.1234,  # rounds to 3.12
         sl_trigger_price=1.8012,  # rounds to 1.80
-        sl_limit_price=1.7508,    # rounds to 1.75
+        sl_limit_price=1.7508,  # rounds to 1.75
         client_order_id="open-round-test",
     )
     req = fake.submitted[0]

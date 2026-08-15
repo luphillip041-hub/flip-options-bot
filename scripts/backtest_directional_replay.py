@@ -17,7 +17,7 @@ import os
 import subprocess
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,8 @@ from flip_options_bot.market_time import is_entry_window
 from flip_options_bot.strategies.long_call import compute_conviction, make_filters_from_settings
 from flip_options_bot.strategies.long_put import (
     compute_conviction as compute_put_conviction,
+)
+from flip_options_bot.strategies.long_put import (
     make_filters_from_settings as make_put_filters,
 )
 
@@ -78,7 +80,9 @@ def _curl_json(url: str) -> dict:
         raise RuntimeError(f"bad json from alpaca: {r.stdout[:300]}") from exc
 
 
-def fetch_stock_bars(symbols: list[str], start: datetime, end: datetime, data_base: str) -> dict[str, list[dict]]:
+def fetch_stock_bars(
+    symbols: list[str], start: datetime, end: datetime, data_base: str
+) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {s: [] for s in symbols}
     token = None
     pages = 0
@@ -128,7 +132,7 @@ def _features(window: list[dict]) -> tuple[float, float, float]:
     vols = [b["v"] for b in window]
     direction_move = (closes[-1] - closes[0]) / closes[0]
     typical = [(b["h"] + b["l"] + b["c"]) / 3 for b in window]
-    vwap = sum(tp * v for tp, v in zip(typical, vols)) / max(sum(vols), 1)
+    vwap = sum(tp * v for tp, v in zip(typical, vols, strict=True)) / max(sum(vols), 1)
     vwap_extension = abs(closes[-1] - vwap) / vwap
     short_momentum = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 10 else direction_move
     return direction_move, vwap_extension, short_momentum
@@ -142,7 +146,9 @@ def _dir_ret(side: str, entry: float, future: float | None) -> float | None:
     return entry / future - 1.0
 
 
-def summarize(rows: list[SignalReplay], start: str, end: str, symbols: list[str], manifest: dict) -> dict:
+def summarize(
+    rows: list[SignalReplay], start: str, end: str, symbols: list[str], manifest: dict
+) -> dict:
     def stat(vals: list[float | None]) -> dict:
         clean = [float(v) for v in vals if v is not None and math.isfinite(v)]
         if not clean:
@@ -203,14 +209,20 @@ def summarize(rows: list[SignalReplay], start: str, end: str, symbols: list[str]
 def run(args: argparse.Namespace) -> dict:
     load_dotenv("/root/.config/flip-options-bot/.env", override=True)
     settings = get_settings()
-    symbols = [s.strip().upper() for s in (args.symbols or os.environ.get("FOB_WATCHLIST", "SPY,QQQ,IWM,DIA")).split(",") if s.strip()]
-    start = datetime.fromisoformat(args.start).replace(tzinfo=ET).astimezone(timezone.utc)
-    end = datetime.fromisoformat(args.end).replace(tzinfo=ET).astimezone(timezone.utc)
+    symbols = [
+        s.strip().upper()
+        for s in (args.symbols or os.environ.get("FOB_WATCHLIST", "SPY,QQQ,IWM,DIA")).split(",")
+        if s.strip()
+    ]
+    start = datetime.fromisoformat(args.start).replace(tzinfo=ET).astimezone(UTC)
+    end = datetime.fromisoformat(args.end).replace(tzinfo=ET).astimezone(UTC)
     bars_by_symbol = fetch_stock_bars(symbols, start, end, settings.alpaca_data_base)
 
     call_filters = make_filters_from_settings(settings)
     put_filters = make_put_filters(settings)
-    lookback = max(call_filters.directional_lookback_minutes, put_filters.directional_lookback_minutes)
+    lookback = max(
+        call_filters.directional_lookback_minutes, put_filters.directional_lookback_minutes
+    )
     candidates_by_ts: dict[str, list[dict]] = defaultdict(list)
     bar_index: dict[tuple[str, str], int] = {}
     bars_norm: dict[str, list[dict]] = {}
@@ -230,28 +242,44 @@ def run(args: argparse.Namespace) -> dict:
             # Historical option spread is unavailable; use tight-spread assumption
             # so this tests underlying signal quality, not option chain coverage.
             spread_pct = 0.05
-            if settings.long_call_enabled and direction_move >= call_filters.min_direction_move_pct and short_momentum >= call_filters.min_short_momentum_pct:
-                conv = compute_conviction(direction_move, vwap_extension, short_momentum, spread_pct, call_filters)
+            if (
+                settings.long_call_enabled
+                and direction_move >= call_filters.min_direction_move_pct
+                and short_momentum >= call_filters.min_short_momentum_pct
+            ):
+                conv = compute_conviction(
+                    direction_move, vwap_extension, short_momentum, spread_pct, call_filters
+                )
                 if conv >= call_filters.min_conviction:
-                    candidates_by_ts[b["t"]].append({
-                        "symbol": sym,
-                        "side": "call",
-                        "conviction": conv,
-                        "bar_idx": i,
-                        "entry_price": b["c"],
-                        "features": (direction_move, vwap_extension, short_momentum),
-                    })
-            if settings.long_put_enabled and direction_move <= -put_filters.min_direction_move_pct and short_momentum <= -put_filters.min_short_momentum_pct:
-                conv = compute_put_conviction(direction_move, vwap_extension, short_momentum, spread_pct, put_filters)
+                    candidates_by_ts[b["t"]].append(
+                        {
+                            "symbol": sym,
+                            "side": "call",
+                            "conviction": conv,
+                            "bar_idx": i,
+                            "entry_price": b["c"],
+                            "features": (direction_move, vwap_extension, short_momentum),
+                        }
+                    )
+            if (
+                settings.long_put_enabled
+                and direction_move <= -put_filters.min_direction_move_pct
+                and short_momentum <= -put_filters.min_short_momentum_pct
+            ):
+                conv = compute_put_conviction(
+                    direction_move, vwap_extension, short_momentum, spread_pct, put_filters
+                )
                 if conv >= put_filters.min_conviction:
-                    candidates_by_ts[b["t"]].append({
-                        "symbol": sym,
-                        "side": "put",
-                        "conviction": conv,
-                        "bar_idx": i,
-                        "entry_price": b["c"],
-                        "features": (direction_move, vwap_extension, short_momentum),
-                    })
+                    candidates_by_ts[b["t"]].append(
+                        {
+                            "symbol": sym,
+                            "side": "put",
+                            "conviction": conv,
+                            "bar_idx": i,
+                            "entry_price": b["c"],
+                            "features": (direction_move, vwap_extension, short_momentum),
+                        }
+                    )
 
     active_until: dict[str, datetime] = {}
     rows: list[SignalReplay] = []
@@ -266,7 +294,7 @@ def run(args: argparse.Namespace) -> dict:
             if open_count >= settings.max_positions:
                 break
             sym = c["symbol"]
-            if active_until.get(sym, datetime.min.replace(tzinfo=timezone.utc)) > ts:
+            if active_until.get(sym, datetime.min.replace(tzinfo=UTC)) > ts:
                 continue
             bars = bars_norm[sym]
             i = c["bar_idx"]
@@ -274,22 +302,35 @@ def run(args: argparse.Namespace) -> dict:
             if entry_i >= len(bars):
                 continue
             entry = bars[entry_i]["c"]
-            day_et = datetime.fromisoformat(bars[entry_i]["t"].replace("Z", "+00:00")).astimezone(ET).date()
+            day_et = (
+                datetime.fromisoformat(bars[entry_i]["t"].replace("Z", "+00:00"))
+                .astimezone(ET)
+                .date()
+            )
             same_day_indices = [
-                j for j in range(entry_i, len(bars))
-                if datetime.fromisoformat(bars[j]["t"].replace("Z", "+00:00")).astimezone(ET).date() == day_et
+                j
+                for j in range(entry_i, len(bars))
+                if datetime.fromisoformat(bars[j]["t"].replace("Z", "+00:00")).astimezone(ET).date()
+                == day_et
             ]
             if not same_day_indices:
                 continue
             eod_i = same_day_indices[-1]
 
-            def close_after(minutes: int) -> tuple[str | None, float | None, int | None]:
-                target = ts + timedelta(minutes=minutes)
-                for j in range(entry_i, min(eod_i + 1, len(bars))):
-                    jt = datetime.fromisoformat(bars[j]["t"].replace("Z", "+00:00"))
+            def close_after(
+                minutes: int,
+                *,
+                decision_ts: datetime = ts,
+                entry_index: int = entry_i,
+                eod_index: int = eod_i,
+                symbol_bars: list[dict] = bars,
+            ) -> tuple[str | None, float | None, int | None]:
+                target = decision_ts + timedelta(minutes=minutes)
+                for j in range(entry_index, min(eod_index + 1, len(symbol_bars))):
+                    jt = datetime.fromisoformat(symbol_bars[j]["t"].replace("Z", "+00:00"))
                     if jt >= target:
-                        return bars[j]["t"], bars[j]["c"], j
-                return bars[eod_i]["t"], bars[eod_i]["c"], eod_i
+                        return symbol_bars[j]["t"], symbol_bars[j]["c"], j
+                return symbol_bars[eod_index]["t"], symbol_bars[eod_index]["c"], eod_index
 
             ts15, px15, _ = close_after(15)
             ts30, px30, _ = close_after(30)
@@ -297,23 +338,25 @@ def run(args: argparse.Namespace) -> dict:
             ts120, px120, _ = close_after(120)
             px_eod = bars[eod_i]["c"]
             direction_move, vwap_extension, short_momentum = c["features"]
-            rows.append(SignalReplay(
-                decision_ts=ts_str,
-                symbol=sym,
-                side=c["side"],
-                conviction=round(c["conviction"], 6),
-                entry_price=entry,
-                exit_ts_60m=ts60,
-                exit_price_60m=px60,
-                dir_ret_15m=_dir_ret(c["side"], entry, px15),
-                dir_ret_30m=_dir_ret(c["side"], entry, px30),
-                dir_ret_60m=_dir_ret(c["side"], entry, px60),
-                dir_ret_120m=_dir_ret(c["side"], entry, px120),
-                dir_ret_eod=_dir_ret(c["side"], entry, px_eod),
-                direction_move=direction_move,
-                vwap_extension=vwap_extension,
-                short_momentum=short_momentum,
-            ))
+            rows.append(
+                SignalReplay(
+                    decision_ts=ts_str,
+                    symbol=sym,
+                    side=c["side"],
+                    conviction=round(c["conviction"], 6),
+                    entry_price=entry,
+                    exit_ts_60m=ts60,
+                    exit_price_60m=px60,
+                    dir_ret_15m=_dir_ret(c["side"], entry, px15),
+                    dir_ret_30m=_dir_ret(c["side"], entry, px30),
+                    dir_ret_60m=_dir_ret(c["side"], entry, px60),
+                    dir_ret_120m=_dir_ret(c["side"], entry, px120),
+                    dir_ret_eod=_dir_ret(c["side"], entry, px_eod),
+                    direction_move=direction_move,
+                    vwap_extension=vwap_extension,
+                    short_momentum=short_momentum,
+                )
+            )
             until = datetime.fromisoformat((ts60 or bars[eod_i]["t"]).replace("Z", "+00:00"))
             active_until[sym] = until
             open_count += 1
@@ -323,13 +366,18 @@ def run(args: argparse.Namespace) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows_path = out_dir / "underlying_replay_trades.csv"
     with rows_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(asdict(rows[0]).keys()) if rows else list(SignalReplay.__dataclass_fields__.keys()))
+        writer = csv.DictWriter(
+            f,
+            fieldnames=list(asdict(rows[0]).keys())
+            if rows
+            else list(SignalReplay.__dataclass_fields__.keys()),
+        )
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
     manifest = {
         "commit": subprocess.check_output(["git", "log", "-1", "--oneline"], text=True).strip(),
-        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "retrieved_at": datetime.now(UTC).isoformat(),
         "data_source": "Alpaca stock bars v2 feed=iex",
         "hold_minutes": args.hold_minutes,
         "scan_granularity": "1Min bars; live daemon scans every 30s, replay is bar-limited",
@@ -347,7 +395,10 @@ def run(args: argparse.Namespace) -> dict:
         "raw_bar_counts": {sym: len(v) for sym, v in bars_by_symbol.items()},
     }
     summary = summarize(rows, args.start, args.end, symbols, manifest)
-    summary["artifacts"] = {"trades_csv": str(rows_path), "summary_json": str(out_dir / "summary.json")}
+    summary["artifacts"] = {
+        "trades_csv": str(rows_path),
+        "summary_json": str(out_dir / "summary.json"),
+    }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
     print(json.dumps(summary, indent=2, sort_keys=True))
     return summary

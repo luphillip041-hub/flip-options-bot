@@ -67,9 +67,9 @@ class ObservationHarness:
     def _load_state(self) -> dict:
         if not self.state_path.exists():
             return {
-                "market_days": [],          # list of YYYY-MM-DD strings
-                "started_at": "",           # ISO timestamp
-                "last_recorded_at": "",     # ISO timestamp
+                "market_days": [],  # list of YYYY-MM-DD strings
+                "started_at": "",  # ISO timestamp
+                "last_recorded_at": "",  # ISO timestamp
                 "promoted_to_live": False,
                 "promotion_blocked_reasons": [],
             }
@@ -77,8 +77,13 @@ class ObservationHarness:
             return json.loads(self.state_path.read_text())
         except json.JSONDecodeError:
             log.warning("observation_state.json corrupt; resetting")
-            return {"market_days": [], "started_at": "", "last_recorded_at": "",
-                    "promoted_to_live": False, "promotion_blocked_reasons": []}
+            return {
+                "market_days": [],
+                "started_at": "",
+                "last_recorded_at": "",
+                "promoted_to_live": False,
+                "promotion_blocked_reasons": [],
+            }
 
     def _save_state(self) -> None:
         self.state_path.write_text(json.dumps(self.state, indent=2, sort_keys=True))
@@ -94,8 +99,7 @@ class ObservationHarness:
         self.state["market_days"].append(day)
         self.state["last_recorded_at"] = datetime.now(UTC).isoformat()
         self._save_state()
-        log.info("recorded paper market day %s (total: %d)",
-                 day, len(self.state["market_days"]))
+        log.info("recorded paper market day %s (total: %d)", day, len(self.state["market_days"]))
         return True
 
     def compute_realized_stats(self, journal_db_path: Path) -> tuple[float, float, float]:
@@ -131,13 +135,9 @@ class ObservationHarness:
 
         reasons = []
         if n_days < self.min_market_days:
-            reasons.append(
-                f"only {n_days} paper market days recorded; need {self.min_market_days}"
-            )
+            reasons.append(f"only {n_days} paper market days recorded; need {self.min_market_days}")
         if win_rate < self.min_win_rate:
-            reasons.append(
-                f"win rate {win_rate:.1%} below {self.min_win_rate:.0%} floor"
-            )
+            reasons.append(f"win rate {win_rate:.1%} below {self.min_win_rate:.0%} floor")
         if max_dd_pct > self.max_drawdown_allowed_pct:
             reasons.append(
                 f"max drawdown {max_dd_pct:.1f}% > {self.max_drawdown_allowed_pct}% ceiling"
