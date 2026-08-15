@@ -133,8 +133,8 @@ def test_flatten_all_iterates_open_positions(tmp_path: Path) -> None:
     closer.journal = journal
     closer.risk = risk
 
-    p1 = _open_position(journal, "SPY260815C00770000", qty=1, avg_entry=2.50)
-    p2 = _open_position(journal, "QQQ260815C00770000", qty=2, avg_entry=3.00)
+    _open_position(journal, "SPY260815C00770000", qty=1, avg_entry=2.50)
+    _open_position(journal, "QQQ260815C00770000", qty=2, avg_entry=3.00)
 
     n = closer.flatten_all(risk, reason="panic")
     assert n == 2, n

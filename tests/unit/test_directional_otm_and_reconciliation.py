@@ -1,14 +1,14 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from flip_options_bot.broker import BrokerClient
 from flip_options_bot.config import Settings
+from flip_options_bot.data.yfinance_options import YFinanceOptionQuote
 from flip_options_bot.execution.executor import Executor
 from flip_options_bot.journal import Journal, TradeEvent
 from flip_options_bot.risk import RiskEngine
-from flip_options_bot.data.yfinance_options import YFinanceOptionQuote
 from flip_options_bot.signal import FunnelRecorder
 from flip_options_bot.signal.scanner import Scanner
 from flip_options_bot.strategies.long_call import LongCallSignal
@@ -16,8 +16,16 @@ from flip_options_bot.strategies.long_put import LongPutSignal
 
 
 def _bars(start: float, step: float, n: int = 60):
+    base = datetime.now(UTC) - timedelta(minutes=n - 1)
     return [
-        {"o": start + i * step, "h": start + i * step + 0.05, "l": start + i * step - 0.05, "c": start + i * step, "v": 1000}
+        {
+            "t": (base + timedelta(minutes=i)).isoformat(),
+            "o": start + i * step,
+            "h": start + i * step + 0.05,
+            "l": start + i * step - 0.05,
+            "c": start + i * step,
+            "v": 1000,
+        }
         for i in range(n)
     ]
 
@@ -50,7 +58,7 @@ def test_long_call_prefers_configured_otm_strike(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    expiry = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
         {"symbol": "SPY_C_102", "expiry": expiry, "type": "call", "strike": 102.0, "open_interest": 100},
         {"symbol": "SPY_C_103", "expiry": expiry, "type": "call", "strike": 103.0, "open_interest": 100},
@@ -84,7 +92,7 @@ def test_long_put_prefers_configured_otm_strike(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(104.0, -0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    expiry = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
         {"symbol": "SPY_P_100", "expiry": expiry, "type": "put", "strike": 100.0, "open_interest": 100},
         {"symbol": "SPY_P_101", "expiry": expiry, "type": "put", "strike": 101.0, "open_interest": 100},
@@ -104,6 +112,73 @@ def test_long_put_prefers_configured_otm_strike(tmp_path: Path):
     assert sig.dte == 0
 
 
+def test_long_call_disabled_suppresses_bullish_call_fallback(tmp_path: Path):
+    settings = Settings(
+        run_dir=tmp_path,
+        long_call_enabled=False,
+        long_put_enabled=False,
+        long_equity_enabled=False,
+        min_dte=0,
+        target_dte=0,
+        max_dte=0,
+    )
+    broker = MagicMock(spec=BrokerClient)
+    broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
+    broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
+    expiry = datetime.now(UTC).strftime("%Y-%m-%d")
+    broker.list_option_contracts.return_value = [
+        {"symbol": "SPY_C_103", "expiry": expiry, "type": "call", "strike": 103.0, "open_interest": 100},
+    ]
+    broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path)).scan(["SPY"])
+
+    assert result.candidates == []
+    broker.list_option_contracts.assert_not_called()
+
+
+def test_directional_scan_rejects_missing_underlying_bar_timestamp(tmp_path: Path):
+    settings = Settings(run_dir=tmp_path, long_put_enabled=False, long_equity_enabled=False)
+    broker = MagicMock(spec=BrokerClient)
+    bars = _bars(100.0, 0.04)
+    for bar in bars:
+        bar.pop("t")
+    broker.get_stock_bars_minute.return_value = bars
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path)).scan(["SPY"])
+
+    assert result.candidates == []
+    broker.list_option_contracts.assert_not_called()
+
+
+def test_directional_scan_rejects_previous_session_underlying_bars(tmp_path: Path):
+    settings = Settings(run_dir=tmp_path, long_put_enabled=False, long_equity_enabled=False)
+    broker = MagicMock(spec=BrokerClient)
+    stale_base = datetime.now(UTC) - timedelta(days=1, minutes=59)
+    bars = _bars(100.0, 0.04)
+    for i, bar in enumerate(bars):
+        bar["t"] = (stale_base + timedelta(minutes=i)).isoformat()
+    broker.get_stock_bars_minute.return_value = bars
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path)).scan(["SPY"])
+
+    assert result.candidates == []
+    broker.list_option_contracts.assert_not_called()
+
+
+def test_directional_scan_rejects_sparse_underlying_bars(tmp_path: Path):
+    settings = Settings(run_dir=tmp_path, long_put_enabled=False, long_equity_enabled=False)
+    broker = MagicMock(spec=BrokerClient)
+    bars = _bars(100.0, 0.04)
+    bars[-10]["t"] = (datetime.fromisoformat(bars[-11]["t"]) + timedelta(minutes=3)).isoformat()
+    broker.get_stock_bars_minute.return_value = bars
+
+    result = Scanner(settings, broker, FunnelRecorder(tmp_path)).scan(["SPY"])
+
+    assert result.candidates == []
+    broker.list_option_contracts.assert_not_called()
+
+
 def test_long_call_falls_forward_when_0dte_chain_is_too_wide(tmp_path: Path):
     settings = Settings(
         run_dir=tmp_path,
@@ -117,7 +192,7 @@ def test_long_call_falls_forward_when_0dte_chain_is_too_wide(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     exp0 = today.strftime("%Y-%m-%d")
     exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     contracts = [
@@ -154,7 +229,7 @@ def test_long_put_falls_forward_when_0dte_chain_is_too_wide(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(104.0, -0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     exp0 = today.strftime("%Y-%m-%d")
     exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     contracts = [
@@ -191,7 +266,7 @@ def test_long_call_falls_forward_when_0dte_contract_is_over_cap(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     exp0 = today.strftime("%Y-%m-%d")
     exp7 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     contracts = [
@@ -231,7 +306,7 @@ def test_high_reward_mode_prefers_farther_otm_call(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 99.99, "ask": 100.01}
-    expiry = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
         {"symbol": "SPY_C_100_5", "expiry": expiry, "type": "call", "strike": 100.5, "open_interest": 100},
         {"symbol": "SPY_C_101_5", "expiry": expiry, "type": "call", "strike": 101.5, "open_interest": 100},
@@ -265,7 +340,7 @@ def test_high_reward_mode_rejects_dust_premium_call(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 99.99, "ask": 100.01}
-    expiry = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
         {"symbol": "SPY_C_101_5", "expiry": expiry, "type": "call", "strike": 101.5, "open_interest": 100},
         {"symbol": "SPY_C_101_0", "expiry": expiry, "type": "call", "strike": 101.0, "open_interest": 100},
@@ -305,7 +380,7 @@ def test_high_reward_mode_prefers_farther_otm_put(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(104.0, -0.04)
     broker.get_stock_quote.return_value = {"bid": 99.99, "ask": 100.01}
-    expiry = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [
         {"symbol": "SPY_P_99_5", "expiry": expiry, "type": "put", "strike": 99.5, "open_interest": 100},
         {"symbol": "SPY_P_98_5", "expiry": expiry, "type": "put", "strike": 98.5, "open_interest": 100},
@@ -338,7 +413,7 @@ def test_yfinance_1dte_bidask_confirmation_enriches_candidate(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    expiry = (datetime.now(timezone.utc).date() + timedelta(days=1)).strftime("%Y-%m-%d")
+    expiry = (datetime.now(UTC).date() + timedelta(days=1)).strftime("%Y-%m-%d")
     contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.20}
@@ -378,7 +453,7 @@ def test_yfinance_confirmation_not_queried_for_0dte(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    expiry = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    expiry = datetime.now(UTC).strftime("%Y-%m-%d")
     contracts = [{"symbol": "SPY260814C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
@@ -409,14 +484,14 @@ def test_yfinance_confirmation_applies_through_14dte_max(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    expiry = (datetime.now(timezone.utc).date() + timedelta(days=14)).strftime("%Y-%m-%d")
+    expiry = (datetime.now(UTC).date() + timedelta(days=14)).strftime("%Y-%m-%d")
     contracts = [{"symbol": "SPY260828C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
     provider = FakeYFinanceProvider(YFinanceOptionQuote(
         contract_symbol="SPY260828C00103500",
         last_price=1.03,
-        last_trade_date=datetime.now(timezone.utc).isoformat(),
+        last_trade_date=datetime.now(UTC).isoformat(),
         volume=500,
     ))
 
@@ -447,7 +522,7 @@ def test_yfinance_stale_volume_does_not_boost_candidate(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    expiry = (datetime.now(timezone.utc).date() + timedelta(days=1)).strftime("%Y-%m-%d")
+    expiry = (datetime.now(UTC).date() + timedelta(days=1)).strftime("%Y-%m-%d")
     contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}
@@ -485,7 +560,7 @@ def test_yfinance_strict_gate_rejects_wide_1dte_quote(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _bars(100.0, 0.04)
     broker.get_stock_quote.return_value = {"bid": 101.98, "ask": 102.02}
-    expiry = (datetime.now(timezone.utc).date() + timedelta(days=1)).strftime("%Y-%m-%d")
+    expiry = (datetime.now(UTC).date() + timedelta(days=1)).strftime("%Y-%m-%d")
     contracts = [{"symbol": "SPY260815C00103500", "expiry": expiry, "type": "call", "strike": 103.5, "open_interest": 100}]
     broker.list_option_contracts.return_value = contracts
     broker.get_option_snapshot.return_value = {"bid": 1.00, "ask": 1.06}

@@ -4,11 +4,9 @@ cancel_stale_orders — the two paths that the old flip-alpaca-bot got wrong.
 We mock alpaca-py entirely; no live calls.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from flip_options_bot.broker import BrokerClient
 from flip_options_bot.execution import Executor
@@ -32,10 +30,11 @@ def test_list_filled_orders_filters_correctly(tmp_path: Path):
     broker = _make_broker()
 
     # Mock the underlying trading client
-    from alpaca.trading.enums import OrderStatus, AssetClass
     from datetime import timedelta
-    now = datetime.now(timezone.utc)
-    old_submitted = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    from alpaca.trading.enums import AssetClass, OrderStatus
+    now = datetime.now(UTC)
+    old_submitted = datetime(2020, 1, 1, tzinfo=UTC)
     new_submitted = now + timedelta(seconds=10)  # must be > since_ts
 
     def make_order(sym, status, asset_class, submitted):
@@ -68,12 +67,11 @@ def test_list_filled_orders_handles_after_typeerror(tmp_path: Path):
     """If `after=datetime` raises TypeError (known SDK bug), fall back
     to client-side cutoff."""
     broker = _make_broker()
-    from alpaca.trading.requests import GetOrdersRequest
-    from alpaca.trading.enums import OrderStatus, AssetClass
+    from alpaca.trading.enums import AssetClass, OrderStatus
 
     # First call (with after=) raises TypeError. Second call (without) succeeds.
-    cutoff = datetime(2026, 8, 1, tzinfo=timezone.utc)
-    new_submitted = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 8, 1, tzinfo=UTC)
+    new_submitted = datetime(2026, 8, 12, tzinfo=UTC)
 
     def make_order(sym, status, submitted):
         o = MagicMock()
@@ -86,7 +84,7 @@ def test_list_filled_orders_handles_after_typeerror(tmp_path: Path):
 
     fallback_orders = [
         make_order("FILLED_NEW", OrderStatus.FILLED, new_submitted),
-        make_order("FILLED_OLD", OrderStatus.FILLED, datetime(2020, 1, 1, tzinfo=timezone.utc)),
+        make_order("FILLED_OLD", OrderStatus.FILLED, datetime(2020, 1, 1, tzinfo=UTC)),
     ]
 
     def get_orders(req):
@@ -115,9 +113,9 @@ def test_cancel_stale_orders_cancels_old_only(tmp_path: Path):
     executor.broker = broker
     executor.journal = journal
 
-    from alpaca.trading.enums import OrderStatus, AssetClass
-    now = datetime.now(timezone.utc)
-    old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=timezone.utc)
+    from alpaca.trading.enums import AssetClass, OrderStatus
+    now = datetime.now(UTC)
+    old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=UTC)
     fresh = now
 
     def make_order(coid, status, submitted):
@@ -150,14 +148,12 @@ def test_cancel_stale_orders_skips_journaled(tmp_path: Path):
     """Don't cancel orders that are already journaled as 'open'."""
     broker = _make_broker()
     journal = Journal(tmp_path)
-    risk = RiskEngine.__new__(RiskEngine)
-
     executor = Executor.__new__(Executor)
     executor.broker = broker
     executor.journal = journal
 
     from alpaca.trading.enums import OrderStatus
-    old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=timezone.utc)
+    old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=UTC)
 
     order = MagicMock()
     order.id = "id-open-123"
@@ -194,8 +190,8 @@ def test_cancel_stale_orders_cancels_stale_close_attempt(tmp_path: Path):
     executor.broker = broker
     executor.journal = journal
 
-    from alpaca.trading.enums import OrderStatus, OrderSide
-    old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=timezone.utc)
+    from alpaca.trading.enums import OrderSide, OrderStatus
+    old = datetime(2026, 8, 11, 22, 0, 0, tzinfo=UTC)
     coid = "close-123"
 
     order = MagicMock()

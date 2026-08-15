@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from flip_options_bot.signal import FunnelRecorder, FunnelRow
+from flip_options_bot.signal import FunnelRecorder
 
 
 def test_emit_writes_one_row(tmp_path: Path):

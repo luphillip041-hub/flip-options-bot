@@ -19,10 +19,9 @@ Pattern (from paper-to-live-trading-bot-scaffold + go-trader-prior-art):
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 from ..config import Settings
 
@@ -159,7 +158,7 @@ class RiskEngine:
                 """,
                 (
                     event_id,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     kind,
                     pnl,
                     payload,
@@ -175,7 +174,7 @@ class RiskEngine:
         Bug-class fix: do NOT zero daily_pnl on a fresh state. Only zero
         if last_reset_day is non-empty AND different from today.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         today = now.strftime("%Y-%m-%d")
         iso_week = now.strftime("%Y-W%W")
 
@@ -235,7 +234,7 @@ class RiskEngine:
         state: RiskState,
         equity: float,
         proposed_debit: float,
-    ) -> "RiskEngine.Decision":
+    ) -> RiskEngine.Decision:
         """Pre-trade gate. Order of checks matters:
 
         1. Kill switch — short-circuit. (If the kill switch fires, no trade.)
@@ -310,7 +309,7 @@ class RiskEngine:
         state: RiskState,
         equity: float,
         proposed_risk: float,
-    ) -> "RiskEngine.Decision":
+    ) -> RiskEngine.Decision:
         """Pre-trade gate for long equity fallback.
 
         Shares are bounded by **stop risk**, not full notional. Notional stays
@@ -356,7 +355,7 @@ class RiskEngine:
         state: RiskState,
         equity: float,
         max_loss: float,
-    ) -> "RiskEngine.Decision":
+    ) -> RiskEngine.Decision:
         """Pre-trade gate for CREDIT SPREADS (BPCS).
 
         KEY DIFFERENCE from `evaluate_pre_trade`:
@@ -431,7 +430,7 @@ class RiskEngine:
 
     def record_open(self, state: RiskState, symbol: str, debit: float, event_id: str) -> RiskState:
         state.open_position_count += 1
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        state.updated_at = datetime.now(UTC).isoformat()
         self._persist_state(state)
         self.record_event(event_id, "open", pnl=-debit, payload=symbol)
         return state
@@ -445,7 +444,7 @@ class RiskEngine:
         which is income). We track max_loss in the payload for audit.
         """
         state.open_position_count += 1
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        state.updated_at = datetime.now(UTC).isoformat()
         self._persist_state(state)
         self.record_event(event_id, "open_spread", pnl=0.0, payload=f"{symbol}|max_loss={max_loss:.2f}")
         return state
@@ -468,7 +467,7 @@ class RiskEngine:
         state.daily_pnl += pnl
         state.weekly_pnl += pnl
         state.realized_pnl_total += pnl
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        state.updated_at = datetime.now(UTC).isoformat()
         self._persist_state(state)
         self.record_event(event_id, "close", pnl=pnl, payload=payload)
         return state
@@ -478,13 +477,13 @@ class RiskEngine:
     def force_kill(self, state: RiskState, reason: str) -> RiskState:
         state.kill_switch = True
         state.kill_reason = reason
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        state.updated_at = datetime.now(UTC).isoformat()
         self._persist_state(state)
         return state
 
     def release_kill(self, state: RiskState) -> RiskState:
         state.kill_switch = False
         state.kill_reason = ""
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        state.updated_at = datetime.now(UTC).isoformat()
         self._persist_state(state)
         return state

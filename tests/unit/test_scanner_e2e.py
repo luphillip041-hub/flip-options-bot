@@ -10,7 +10,7 @@ open. Catches bugs like:
 - Entry-price formula
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -23,9 +23,10 @@ from flip_options_bot.signal.scanner import Scanner
 def _fakish_bars(prices: list[float], vols: list[int]) -> list[dict]:
     """Build realistic minute bars from a price sequence."""
     bars = []
-    for i, (p, v) in enumerate(zip(prices, vols)):
+    base = datetime.now(UTC) - timedelta(minutes=len(prices) - 1)
+    for i, (p, v) in enumerate(zip(prices, vols, strict=True)):
         bars.append({
-            "t": (datetime(2026, 8, 12, 14, 0, tzinfo=timezone.utc) + timedelta(minutes=i)).isoformat(),
+            "t": (base + timedelta(minutes=i)).isoformat(),
             "o": p,
             "h": p * 1.001,
             "l": p * 0.999,
@@ -53,7 +54,7 @@ def _build_broker_mock() -> MagicMock:
     })
 
     # Option chain: 3 calls, all tight bid/ask, valid OI
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     expiry_str = (today + timedelta(days=5)).strftime("%Y-%m-%d")
     expiry_yymmdd = (today + timedelta(days=5)).strftime("%y%m%d")
     contracts = [
@@ -107,7 +108,7 @@ def test_scanner_skips_with_wide_spreads(tmp_path: Path):
     scanner = Scanner(settings, broker, funnel)
 
     # Override the snapshots to be very wide spread (50%+)
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     expiry_yymmdd = (today + timedelta(days=5)).strftime("%y%m%d")
     wide = {
         f"SPY{expiry_yymmdd}C010100": {"bid": 0.40, "ask": 0.80},   # 67% spread

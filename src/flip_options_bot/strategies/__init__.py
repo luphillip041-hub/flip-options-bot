@@ -8,11 +8,11 @@ Pattern from go-trader-prior-art + lean-algorithm-python-prior-art:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from ..config import Settings
-from . import long_call, bull_put_credit, long_equity, long_put
+from . import bull_put_credit, long_call, long_equity, long_put
 
 
 @dataclass

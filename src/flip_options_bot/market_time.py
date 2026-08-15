@@ -10,7 +10,7 @@ No pytz dependency; we use the stdlib zoneinfo (added in Python 3.9).
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")  # handles EST/EDT automatically
@@ -29,7 +29,7 @@ DEFAULT_ENTRY_CLOSE_ET = time(15, 45)  # last 15 min too volatile
 
 def now_utc() -> datetime:
     """UTC-aware now."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def to_et(dt_utc: datetime) -> datetime:

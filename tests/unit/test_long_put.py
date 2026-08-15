@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -10,7 +10,11 @@ from flip_options_bot.journal import Journal
 from flip_options_bot.risk import RiskEngine, RiskState
 from flip_options_bot.signal import FunnelRecorder
 from flip_options_bot.signal.scanner import Scanner
-from flip_options_bot.strategies.long_put import LongPutSignal, compute_conviction, make_filters_from_settings
+from flip_options_bot.strategies.long_put import (
+    LongPutSignal,
+    compute_conviction,
+    make_filters_from_settings,
+)
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -24,9 +28,17 @@ def _settings(tmp_path: Path) -> Settings:
 
 def _down_bars(start=100.0, step=-0.05, n=60):
     out = []
+    base = datetime.now(UTC) - timedelta(minutes=n - 1)
     for i in range(n):
         c = start + i * step
-        out.append({"o": c + 0.02, "h": c + 0.05, "l": c - 0.05, "c": c, "v": 1000})
+        out.append({
+            "t": (base + timedelta(minutes=i)).isoformat(),
+            "o": c + 0.02,
+            "h": c + 0.05,
+            "l": c - 0.05,
+            "c": c,
+            "v": 1000,
+        })
     return out
 
 
@@ -42,7 +54,7 @@ def test_scanner_emits_long_put_on_downtrend(tmp_path: Path):
     broker = MagicMock(spec=BrokerClient)
     broker.get_stock_bars_minute.return_value = _down_bars()
     broker.get_stock_quote.return_value = {"bid": 97.03, "ask": 97.05}
-    expiry = (datetime.now(timezone.utc) + timedelta(days=settings.target_dte)).strftime("%Y-%m-%d")
+    expiry = (datetime.now(UTC) + timedelta(days=settings.target_dte)).strftime("%Y-%m-%d")
     contracts = [
         {"symbol": "SPY_PUT_97", "expiry": expiry, "type": "put", "strike": 97.0, "open_interest": 100},
         {"symbol": "SPY_PUT_98", "expiry": expiry, "type": "put", "strike": 98.0, "open_interest": 100},

@@ -21,10 +21,7 @@ a cron that pulls from a free source (Yahoo Finance calendar, etc.).
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta
-from pathlib import Path
-
+from datetime import datetime
 
 # Default FOMC meeting dates for 2026 (8 per year, every 6 weeks).
 # Source: federalreserve.gov. Update yearly.

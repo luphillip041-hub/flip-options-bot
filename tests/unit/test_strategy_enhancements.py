@@ -2,7 +2,7 @@
 conviction-based sizing, BPCS, entry-time windows.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -30,7 +30,6 @@ from flip_options_bot.strategies.orb import (
     orb_breakout_signal,
 )
 
-
 # ===== ORB =====
 
 def test_orb_compute_opening_range_basic():
@@ -44,7 +43,7 @@ def test_orb_compute_opening_range_basic():
 def test_orb_compute_opening_range_filters_et_time():
     """Bars outside 09:30-10:00 ET should be ignored."""
     from datetime import timedelta
-    base = datetime(2026, 8, 12, 13, 0, tzinfo=timezone.utc)  # 09:00 ET
+    base = datetime(2026, 8, 12, 13, 0, tzinfo=UTC)  # 09:00 ET
     bars = []
     for i in range(60):
         ts = (base + timedelta(minutes=i)).isoformat()
@@ -221,50 +220,49 @@ def test_bpcs_conviction_bearish_blocks():
 
 def test_entry_window_morning():
     """10:00-11:30 ET → True."""
-    from datetime import timezone
     from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-    dt = datetime(2026, 8, 12, 10, 30, tzinfo=ET)
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 8, 12, 10, 30, tzinfo=et)
     assert is_entry_window(dt) is True
 
 
 def test_entry_window_lunch_lull():
     """12:00 ET → False (lunch lull)."""
     from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-    dt = datetime(2026, 8, 12, 12, 0, tzinfo=ET)
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 8, 12, 12, 0, tzinfo=et)
     assert is_entry_window(dt) is False
 
 
 def test_entry_window_afternoon():
     """14:30 ET → True."""
     from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-    dt = datetime(2026, 8, 12, 14, 30, tzinfo=ET)
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 8, 12, 14, 30, tzinfo=et)
     assert is_entry_window(dt) is True
 
 
 def test_entry_window_late():
     """15:45 ET → False (last 30 min)."""
     from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-    dt = datetime(2026, 8, 12, 15, 45, tzinfo=ET)
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 8, 12, 15, 45, tzinfo=et)
     assert is_entry_window(dt) is False
 
 
 def test_entry_window_open_15min():
     """09:30 ET → False (first 15 min, too volatile)."""
     from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-    dt = datetime(2026, 8, 12, 9, 30, tzinfo=ET)
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 8, 12, 9, 30, tzinfo=et)
     assert is_entry_window(dt) is False
 
 
 def test_entry_window_945():
     """09:45 ET → True (start of morning window)."""
     from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-    dt = datetime(2026, 8, 12, 9, 45, tzinfo=ET)
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 8, 12, 9, 45, tzinfo=et)
     assert is_entry_window(dt) is True
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -73,7 +73,7 @@ class FunnelRecorder:
         """
         row = FunnelRow(
             scan_id=str(uuid.uuid4()),
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             watchlist_count=0,
             eligible_count=0,
             chains_fetched=[],
@@ -125,7 +125,7 @@ class FunnelRecorder:
     def new_row(watchlist_count: int, eligible_count: int = 0) -> FunnelRow:
         return FunnelRow(
             scan_id=str(uuid.uuid4()),
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             watchlist_count=watchlist_count,
             eligible_count=eligible_count,
         )

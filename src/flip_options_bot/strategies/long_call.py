@@ -31,7 +31,7 @@ shape of flip-alpaca-bot's long-call but with the structural fixes:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 
@@ -98,7 +98,7 @@ def pick_target_expiry(available_expiries: list[str], filters: LongCallFilters) 
     """
     if not available_expiries:
         return None
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     candidates = []
     for exp_str in available_expiries:
         exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()

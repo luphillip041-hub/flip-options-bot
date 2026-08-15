@@ -22,7 +22,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -39,7 +39,7 @@ class OpeningRange:
 
 def _et(dt: datetime) -> datetime:
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(ET)
 
 

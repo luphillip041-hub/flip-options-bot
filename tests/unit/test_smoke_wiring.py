@@ -14,18 +14,14 @@ are tested in tests/integration/test_broker_integration.py.
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from flip_options_bot.config import Settings
 from flip_options_bot.execution import Closer
 from flip_options_bot.journal import Journal
 from flip_options_bot.monitor.position_monitor import PositionMonitor
 from flip_options_bot.risk import RiskEngine
-from flip_options_bot.signal import FunnelRecorder
-from flip_options_bot.signal.scanner import Scanner
 
 
 def test_components_wire_cleanly(tmp_path: Path) -> None:
@@ -51,8 +47,7 @@ def test_components_wire_cleanly(tmp_path: Path) -> None:
     assert state.kill_switch is False
     assert state.open_position_count == 0
 
-    # Funnel recorder
-    funnel = FunnelRecorder(settings.run_dir)
+    # Funnel recorder constructed in scanner smoke tests.
 
     # Closer (with mocked broker)
     broker = MagicMock()

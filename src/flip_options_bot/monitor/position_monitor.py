@@ -224,7 +224,7 @@ class PositionMonitor:
             orders = self.broker.list_open_orders()
         except Exception as exc:
             log.warning("could not inspect open orders for pending-close guard: %s", exc)
-            return set()
+            return self._journal_pending_close_symbols()
         symbols: set[str] = set()
         for order in orders or []:
             coid = str(getattr(order, "client_order_id", "") or "")
@@ -238,6 +238,28 @@ class PositionMonitor:
             ):
                 symbols.add(symbol)
         return symbols
+
+    def _journal_pending_close_symbols(self) -> set[str]:
+        """Fallback duplicate-close guard when broker open-order lookup fails.
+
+        Broker order truth is preferred because journal close_attempt rows can go
+        stale after cancels. But if broker inspection itself fails, assume recent
+        close_attempt rows are still live for this tick and fail closed.
+        """
+        try:
+            with sqlite3.connect(self.journal.db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT symbol FROM trades
+                    WHERE kind = 'close_attempt'
+                      AND symbol IS NOT NULL
+                      AND symbol != ''
+                    """
+                ).fetchall()
+        except Exception as exc:
+            log.warning("could not inspect journal close attempts: %s", exc)
+            return set()
+        return {str(row[0]) for row in rows if row and row[0]}
 
     def _evaluate_long_equity_position(
         self,

@@ -105,6 +105,33 @@ def test_pending_close_order_blocks_duplicate_close_submit(tmp_path: Path):
     closer.flatten_position.assert_not_called()
 
 
+def test_broker_open_order_failure_uses_journal_close_attempt_guard(tmp_path: Path):
+    """If broker order inspection fails, a prior close_attempt still blocks duplicates."""
+    monitor, journal, closer = _wire_monitor(tmp_path)
+    symbol = "SPY260815C00750000"
+    pos_id = _open_position(journal, symbol, qty=2, avg_entry=1.00)
+    from flip_options_bot.journal.journal import TradeEvent
+
+    journal.append(TradeEvent(
+        event_id="close-existing",
+        ts="2026-08-11T15:01:00+00:00",
+        kind="close_attempt",
+        symbol=symbol,
+        side="sell",
+        qty=2,
+        price=0.40,
+        position_id=pos_id,
+        raw_broker_fill={"close_position_id": pos_id},
+    ))
+    monitor.broker.list_open_orders = MagicMock(side_effect=RuntimeError("broker unavailable"))
+    monitor.broker.get_option_snapshot = MagicMock(return_value=_snap(bid=0.40, ask=0.40))
+
+    tick = monitor.tick(RiskState())
+
+    assert tick.closes_triggered == 0
+    closer.flatten_position.assert_not_called()
+
+
 # ===== SL =====
 
 def test_sl_fires_at_50pct_full_exit(tmp_path: Path):

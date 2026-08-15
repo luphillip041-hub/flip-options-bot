@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from flip_options_bot.strategies.long_call import (
     LongCallFilters,
@@ -32,7 +32,7 @@ def test_pick_target_expiry_prefers_0dte_with_two_week_fallback():
         min_short_momentum_pct=0.001, min_conviction=0.45,
         directional_lookback_minutes=20,
     )
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     expiries = [
         (today + timedelta(days=14)).strftime("%Y-%m-%d"),
         (today + timedelta(days=7)).strftime("%Y-%m-%d"),

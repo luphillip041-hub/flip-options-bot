@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
@@ -27,10 +26,14 @@ from ..strategies.bull_put_credit import (
     BullPutSpreadSignal,
     compute_bpcs_conviction,
     estimate_credit,
-    make_filters_from_settings as make_bpcs_filters,
     passes_bpcs_conviction,
-    pick_target_expiry as pick_bpcs_expiry,
     select_strikes,
+)
+from ..strategies.bull_put_credit import (
+    make_filters_from_settings as make_bpcs_filters,
+)
+from ..strategies.bull_put_credit import (
+    pick_target_expiry as pick_bpcs_expiry,
 )
 from ..strategies.long_call import (
     LongCallFilters,
@@ -40,19 +43,31 @@ from ..strategies.long_call import (
     passes_conviction,
     volatility_regime_ok,
 )
-from ..strategies.long_put import (
-    LongPutFilters,
-    LongPutSignal,
-    compute_conviction as compute_put_conviction,
-    make_filters_from_settings as make_put_filters,
-    passes_conviction as passes_put_conviction,
-)
 from ..strategies.long_equity import (
     LongEquityFilters,
     LongEquitySignal,
+)
+from ..strategies.long_equity import (
     compute_conviction as compute_equity_conviction,
+)
+from ..strategies.long_equity import (
     make_filters_from_settings as make_equity_filters,
+)
+from ..strategies.long_equity import (
     passes_conviction as passes_equity_conviction,
+)
+from ..strategies.long_put import (
+    LongPutFilters,
+    LongPutSignal,
+)
+from ..strategies.long_put import (
+    compute_conviction as compute_put_conviction,
+)
+from ..strategies.long_put import (
+    make_filters_from_settings as make_put_filters,
+)
+from ..strategies.long_put import (
+    passes_conviction as passes_put_conviction,
 )
 
 log = logging.getLogger("flip_options_bot.scanner")
@@ -99,11 +114,13 @@ class Scanner:
         row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
 
         candidates: list[LongCallSignal | LongPutSignal | LongEquitySignal] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for symbol in watchlist:
             try:
-                signals: list[LongCallSignal | LongPutSignal | LongEquitySignal] = list(self._scan_symbol(symbol, filters, now))
+                signals: list[LongCallSignal | LongPutSignal | LongEquitySignal] = []
+                if self.settings.long_call_enabled:
+                    signals.extend(self._scan_symbol(symbol, filters, now))
                 if self.settings.long_put_enabled:
                     signals.extend(self._scan_long_put_symbol(symbol, make_put_filters(self.settings), now))
                 if self.settings.long_equity_enabled and not signals:
@@ -146,7 +163,7 @@ class Scanner:
         filters = make_bpcs_filters(self.settings)
         row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
         candidates: list[BullPutSpreadSignal] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for symbol in watchlist:
             try:
@@ -204,8 +221,6 @@ class Scanner:
         expiry = pick_bpcs_expiry(expiry_set, filters)
         if expiry is None:
             return signals
-        dte = (datetime.strptime(expiry, "%Y-%m-%d").date() - now.date()).days
-
         # Pick strikes by delta proxy. Pass available_strikes so we can snap
         # to the closest available strike when Alpaca paper's chain is
         # incomplete near the spot price.
@@ -323,6 +338,8 @@ class Scanner:
         )
         if len(bars) < filters.directional_lookback_minutes:
             return signals
+        if not self._bars_are_current_session(bars, filters, now):
+            return signals
         direction_move, vwap_extension, short_momentum = self._compute_features(bars, filters)
         if direction_move > -filters.min_direction_move_pct:
             return signals
@@ -430,6 +447,8 @@ class Scanner:
         )
         if len(bars) < filters.directional_lookback_minutes:
             return signals
+        if not self._bars_are_current_session(bars, filters, now):
+            return signals
         direction_move, vwap_extension, short_momentum = self._compute_features(bars, filters)
         if direction_move < filters.min_direction_move_pct:
             return signals
@@ -486,6 +505,8 @@ class Scanner:
         if len(bars) < filters.directional_lookback_minutes:
             # Insufficient bars — structural lesson from flip-alpaca-bot's
             # funnel collapse at the momentum_filter stage.
+            return signals
+        if not self._bars_are_current_session(bars, filters, now):
             return signals
 
         # Compute features
@@ -716,7 +737,7 @@ class Scanner:
         try:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt.astimezone(ET).date().isoformat()
         except Exception:
             return "unknown"
@@ -726,7 +747,7 @@ class Scanner:
         try:
             dt = datetime.fromisoformat(signal.ts.replace("Z", "+00:00"))
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt.astimezone(ET).date().isoformat()
         except Exception:
             return datetime.now(ET).date().isoformat()
@@ -768,6 +789,46 @@ class Scanner:
         ranked.sort()
         return [exp for _, _, exp in ranked]
 
+    def _bars_are_current_session(self, bars: list[dict], filters, now: datetime) -> bool:
+        """Fail closed unless the latest underlying bars are fresh regular-session evidence."""
+        recent = bars[-filters.directional_lookback_minutes:]
+        timestamps: list[datetime] = []
+        for bar in recent:
+            raw_ts = bar.get("t")
+            if not raw_ts:
+                return False
+            try:
+                ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            timestamps.append(ts)
+
+        timestamps.sort()
+        now_utc = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+        latest = timestamps[-1]
+        age_seconds = (now_utc.astimezone(UTC) - latest.astimezone(UTC)).total_seconds()
+        if age_seconds < -300 or age_seconds > 300:
+            return False
+        if latest.astimezone(ET).date() != now_utc.astimezone(ET).date():
+            return False
+        for prev, cur in zip(timestamps, timestamps[1:], strict=False):
+            delta = (cur - prev).total_seconds()
+            if delta <= 0 or delta > 120:
+                return False
+        return True
+
+    @staticmethod
+    def _positive_float(value) -> float | None:
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        if out <= 0:
+            return None
+        return out
+
     def _compute_features(
         self, bars: list[dict], filters
     ) -> tuple[float, float, float]:
@@ -776,21 +837,37 @@ class Scanner:
             return 0.0, 0.0, 0.0
         # Use the most recent lookback window
         recent = bars[-filters.directional_lookback_minutes:]
-        closes = [b["c"] for b in recent]
-        volumes = [b["v"] for b in recent]
+        closes = [self._positive_float(b.get("c")) for b in recent]
+        highs = [self._positive_float(b.get("h")) for b in recent]
+        lows = [self._positive_float(b.get("l")) for b in recent]
+        volumes = [self._positive_float(b.get("v")) for b in recent]
+        if any(v is None for v in [*closes, *highs, *lows, *volumes]):
+            return 0.0, 0.0, 0.0
+        closes_f = [float(v) for v in closes]
+        highs_f = [float(v) for v in highs]
+        lows_f = [float(v) for v in lows]
+        volumes_f = [float(v) for v in volumes]
 
-        first_close = closes[0]
-        last_close = closes[-1]
+        first_close = closes_f[0]
+        last_close = closes_f[-1]
         direction_move = (last_close - first_close) / first_close
 
         # VWAP over the window
-        typical_prices = [(b["h"] + b["l"] + b["c"]) / 3 for b in recent]
-        vwap = sum(tp * v for tp, v in zip(typical_prices, volumes)) / max(sum(volumes), 1)
+        total_volume = sum(volumes_f)
+        if total_volume <= 0:
+            return 0.0, 0.0, 0.0
+        typical_prices = [
+            (high + low + close) / 3
+            for high, low, close in zip(highs_f, lows_f, closes_f, strict=True)
+        ]
+        vwap = sum(tp * v for tp, v in zip(typical_prices, volumes_f, strict=True)) / total_volume
+        if vwap <= 0:
+            return 0.0, 0.0, 0.0
         vwap_extension = abs(last_close - vwap) / vwap
 
         # Short momentum: last 5 minutes vs first 5 minutes of the window
-        if len(closes) >= 10:
-            short_momentum = (closes[-5:][-1] - closes[:5][0]) / closes[:5][0]
+        if len(closes_f) >= 10:
+            short_momentum = (closes_f[-5:][-1] - closes_f[:5][0]) / closes_f[:5][0]
         else:
             short_momentum = direction_move
 

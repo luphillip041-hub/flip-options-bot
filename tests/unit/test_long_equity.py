@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,7 +12,11 @@ from flip_options_bot.monitor.position_monitor import PositionMonitor
 from flip_options_bot.risk import RiskEngine, RiskState
 from flip_options_bot.signal import FunnelRecorder
 from flip_options_bot.signal.scanner import Scanner
-from flip_options_bot.strategies.long_equity import LongEquitySignal, compute_conviction, make_filters_from_settings
+from flip_options_bot.strategies.long_equity import (
+    LongEquitySignal,
+    compute_conviction,
+    make_filters_from_settings,
+)
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -26,9 +30,17 @@ def _settings(tmp_path: Path) -> Settings:
 
 def _bars(start=100.0, step=0.05, n=60):
     out = []
+    base = datetime.now(UTC) - timedelta(minutes=n - 1)
     for i in range(n):
         c = start + i * step
-        out.append({"o": c - 0.02, "h": c + 0.05, "l": c - 0.05, "c": c, "v": 1000})
+        out.append({
+            "t": (base + timedelta(minutes=i)).isoformat(),
+            "o": c - 0.02,
+            "h": c + 0.05,
+            "l": c - 0.05,
+            "c": c,
+            "v": 1000,
+        })
     return out
 
 
@@ -106,7 +118,7 @@ def test_monitor_closes_long_equity_at_take_profit(tmp_path: Path):
     pid = journal.new_position_id()
     journal.append(TradeEvent(
         event_id="long-equity-open",
-        ts=datetime.now(timezone.utc).isoformat(),
+        ts=datetime.now(UTC).isoformat(),
         kind="open",
         symbol="SPY",
         side="buy",

@@ -16,20 +16,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Literal
+from datetime import UTC, datetime, timedelta
 
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
-from alpaca.data.requests import (
-    OptionChainRequest,
-    OptionSnapshotRequest,
-    StockBarsRequest,
-    StockLatestQuoteRequest,
-)
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-from alpaca.data.enums import DataFeed
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     AssetClass,
@@ -39,15 +29,13 @@ from alpaca.trading.enums import (
     OrderType,
     TimeInForce,
 )
+from alpaca.trading.models import Order as AlpacaOrder
 from alpaca.trading.requests import (
     GetOptionContractsRequest,
     LimitOrderRequest,
-    MarketOrderRequest,
     StopLossRequest,
-    StopLimitOrderRequest,
     TakeProfitRequest,
 )
-from alpaca.trading.models import Order as AlpacaOrder
 
 from ..config import Settings
 
@@ -80,11 +68,9 @@ class BrokerClient:
         if settings.is_live():
             api_key = settings.alpaca_live_key
             secret_key = settings.alpaca_live_secret
-            base_url = settings.alpaca_live_base
         else:
             api_key = settings.alpaca_paper_key
             secret_key = settings.alpaca_paper_secret
-            base_url = settings.alpaca_paper_base
         if not api_key or not secret_key:
             raise ValueError(
                 f"phase={settings.phase} but no creds for that phase; "
@@ -101,7 +87,7 @@ class BrokerClient:
         self._account_cache_ts: datetime | None = None
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "BrokerClient":
+    def from_settings(cls, settings: Settings) -> BrokerClient:
         return cls(settings)
 
     # ===== Account =====
@@ -109,7 +95,7 @@ class BrokerClient:
     def get_account(self, force_refresh: bool = False) -> dict:
         """Returns dict with equity, cash, buying_power, options_approved_level,
         trading_blocked, options_blocked. Cached for 5s to avoid hammering."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if (
             not force_refresh
             and self._account_cache
@@ -143,8 +129,8 @@ class BrokerClient:
         alpaca-py's urllib hits TLS fingerprint block from this VPS.
         """
         import base64
-        import subprocess
         import json as _json
+        import subprocess
 
         url = (
             f"{self.settings.alpaca_data_base}/v2/stocks/quotes/latest"
@@ -188,7 +174,7 @@ class BrokerClient:
            querying recent SIP data").
         2. alpaca-py's urllib hits a TLS fingerprint block from this venv.
         """
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = end - timedelta(minutes=lookback_minutes + 5)
         url = (
             f"{self.settings.alpaca_data_base}/v2/stocks/bars"
@@ -198,8 +184,8 @@ class BrokerClient:
             f"&adjustment=raw&feed=iex&limit=10000"
         )
         import base64
-        import subprocess
         import json as _json
+        import subprocess
         if self.settings.is_live():
             cred = (self.settings.alpaca_live_key, self.settings.alpaca_live_secret)
         else:
@@ -294,8 +280,8 @@ class BrokerClient:
             of the default first-1000 (which is mostly deep OTM/ITM).
         """
         import base64
-        import subprocess
         import json as _json
+        import subprocess
 
         underlying = contract_symbol[:3]  # SPY260812C00770000 → SPY (first 3 chars of root)
         # Actually Alpaca uses OCC: 6-char root. SPY is 3, but root_symbol can be longer.
@@ -489,8 +475,8 @@ class BrokerClient:
         Uses GTC because BPCS targets 25-50 DTE — orders should survive
         overnight to get a fill on the next session if not filled today.
         """
-        from alpaca.trading.requests import OptionLegRequest
         from alpaca.trading.enums import OrderClass, PositionIntent
+        from alpaca.trading.requests import OptionLegRequest
 
         # For a credit spread:
         # - short_put_limit = price you SELL at (you get this as credit)
@@ -544,8 +530,8 @@ class BrokerClient:
         The net close debit per share is short_put_limit - long_put_limit.
         Keep this atomic so we never leave one leg open.
         """
-        from alpaca.trading.requests import OptionLegRequest
         from alpaca.trading.enums import OrderClass, PositionIntent
+        from alpaca.trading.requests import OptionLegRequest
 
         net_debit = max(short_put_limit - long_put_limit, 0.01)
         req = LimitOrderRequest(
@@ -705,8 +691,8 @@ class BrokerClient:
         Returns full AlpacaOrder objects so the journal can read fill_price,
         filled_qty, client_order_id.
         """
-        from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
         orders: list = []
         try:
             req = GetOrdersRequest(
@@ -734,10 +720,9 @@ class BrokerClient:
             return []
 
         # Filter: must be FILLED + option asset class + within cutoff
-        from datetime import timezone
         cutoff = since_ts
         if cutoff is not None and cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=timezone.utc)
+            cutoff = cutoff.replace(tzinfo=UTC)
         out = []
         for o in orders:
             if o.status != OrderStatus.FILLED:
@@ -748,7 +733,7 @@ class BrokerClient:
             if cutoff is not None and getattr(o, "submitted_at", None) is not None:
                 submitted = o.submitted_at
                 if submitted.tzinfo is None:
-                    submitted = submitted.replace(tzinfo=timezone.utc)
+                    submitted = submitted.replace(tzinfo=UTC)
                 if submitted < cutoff:
                     continue
             out.append(o)

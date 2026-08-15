@@ -11,7 +11,7 @@ without `-m integration` runs only the unit tests.
 
 from __future__ import annotations
 
-import os
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -86,8 +86,8 @@ def test_get_stock_bars_minute_returns_data(broker: BrokerClient):
 
 
 def test_list_option_contracts_returns_active(broker: BrokerClient):
-    from datetime import datetime, timedelta, timezone
-    now = datetime.now(timezone.utc)
+    from datetime import datetime, timedelta
+    now = datetime.now(UTC)
     expiry_gte = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     expiry_lte = (now + timedelta(days=14)).strftime("%Y-%m-%d")
     contracts = broker.list_option_contracts("SPY", expiry_gte, expiry_lte)

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from flip_options_bot.config import Settings
-from flip_options_bot.risk import RiskEngine, RiskState
+from flip_options_bot.risk import RiskEngine
 
 
 def _make_engine(tmp_path: Path, **overrides) -> tuple[RiskEngine, Settings]:

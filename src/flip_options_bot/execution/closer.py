@@ -216,7 +216,7 @@ class Closer:
             if (pos.get("strategy_id") == "bull_put_credit_spread" or symbol.startswith("BPCS:")):
                 legs = self.journal.get_legs_for_position(pos["position_id"])
                 import json as _json
-                open_spread = next((l for l in legs if l.get("kind") == "open_spread"), None)
+                open_spread = next((leg for leg in legs if leg.get("kind") == "open_spread"), None)
                 raw = open_spread.get("raw_broker_fill") if open_spread else None
                 payload = _json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
                 pair = symbol.removeprefix("BPCS:") if symbol.startswith("BPCS:") else ""

@@ -27,7 +27,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger("flip_options_bot.observation")
@@ -85,14 +85,14 @@ class ObservationHarness:
 
     def record_market_day(self, day_iso: str | None = None) -> bool:
         """Mark a market day as cleanly traded. Idempotent on the date."""
-        day = day_iso or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        day = day_iso or datetime.now(UTC).strftime("%Y-%m-%d")
         if day in self.state["market_days"]:
             log.info("market day %s already recorded; skipping", day)
             return False
         if not self.state["started_at"]:
-            self.state["started_at"] = datetime.now(timezone.utc).isoformat()
+            self.state["started_at"] = datetime.now(UTC).isoformat()
         self.state["market_days"].append(day)
-        self.state["last_recorded_at"] = datetime.now(timezone.utc).isoformat()
+        self.state["last_recorded_at"] = datetime.now(UTC).isoformat()
         self._save_state()
         log.info("recorded paper market day %s (total: %d)",
                  day, len(self.state["market_days"]))
@@ -110,7 +110,6 @@ class ObservationHarness:
         if not pnls:
             return 0.0, 0.0, 0.0
         wins = sum(1 for p in pnls if p > 0)
-        losses = sum(1 for p in pnls if p < 0)
         win_rate = wins / len(pnls) if pnls else 0.0
         net = sum(pnls)
         # Max drawdown as a percent of cumulative peak

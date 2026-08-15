@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from flip_options_bot.broker.alpaca import BrokerClient
 from alpaca.trading.enums import OrderClass
 from alpaca.trading.requests import LimitOrderRequest
+
+from flip_options_bot.broker.alpaca import BrokerClient
 
 
 class FakeTrading:
@@ -61,7 +62,7 @@ def test_submit_bracket_buy_request_shape() -> None:
     settings = _fake_settings()
     broker, fake = _build_broker_with_fake_trading(settings)
 
-    order = broker.submit_bracket_buy(
+    broker.submit_bracket_buy(
         contract_symbol="SPY260815C00770000",
         qty=1,
         limit_price=2.50,
