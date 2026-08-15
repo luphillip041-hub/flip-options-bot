@@ -16,7 +16,7 @@ import logging
 import os
 import sys
 import threading
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -58,6 +58,45 @@ DEFAULT_WATCHLIST = [
     "META",
     "AMD",
 ]
+
+
+def unresolved_stale_close_gate(broker) -> tuple[bool, str]:
+    """Return whether stale prior-session close orders must block new entries.
+
+    Exits/monitoring should keep running, but new BUY entries should not stack
+    onto an account that still has old bot-owned close SELLs stuck in
+    PENDING_CANCEL. Monday's first job is clearing/repricing held positions,
+    not adding fresh risk on top of unresolved exits.
+    """
+    try:
+        if hasattr(broker, "list_open_orders_or_raise"):
+            orders = broker.list_open_orders_or_raise()
+        elif hasattr(broker, "list_open_orders"):
+            orders = broker.list_open_orders()
+        else:
+            return False, ""
+    except Exception as exc:
+        return True, f"stale_close_lookup_failed:{exc}"
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=5)
+    blocked: list[str] = []
+    for order in orders or []:
+        coid = str(getattr(order, "client_order_id", "") or "")
+        side = str(getattr(order, "side", "") or "").upper()
+        status = str(getattr(order, "status", "") or "").upper()
+        submitted = getattr(order, "submitted_at", None)
+        if not coid.startswith("close-") or "SELL" not in side or "PENDING_CANCEL" not in status:
+            continue
+        if submitted is not None:
+            if getattr(submitted, "tzinfo", None) is None:
+                submitted = submitted.replace(tzinfo=UTC)
+            if submitted.astimezone(UTC) > cutoff:
+                continue
+        symbol = str(getattr(order, "symbol", "") or "unknown")
+        blocked.append(symbol)
+    if blocked:
+        return True, "unresolved_stale_close_orders:" + ",".join(sorted(set(blocked)))
+    return False, ""
 
 
 def setup_logging(run_dir: Path) -> None:
@@ -195,6 +234,34 @@ def run_once(
             "submitted_count": 0,
             "reconciled": n_reconciled,
             "dominant_skip_reason": "outside_entry_window",
+            "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
+            "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
+            "yfinance_strict_gate": settings.yfinance_strict_gate,
+            "yfinance_require_current_trade_date_for_volume_bonus": settings.yfinance_require_current_trade_date_for_volume_bonus,
+            "directional_underlying_loss_lockout_dollar": settings.directional_underlying_loss_lockout_dollar,
+            "tp_multiplier": settings.tp_multiplier,
+            "tp_full_multiplier": settings.tp_full_multiplier,
+            "trailing_arm_pct": settings.trailing_arm_pct,
+            "trailing_retention": settings.trailing_retention,
+            "profit_floor_pct": settings.profit_floor_pct,
+            "min_tp_profit_dollar": settings.min_tp_profit_dollar,
+            "runner_trailing_arm_pct": settings.runner_trailing_arm_pct,
+            "runner_trailing_retention": settings.runner_trailing_retention,
+            "runner_profit_floor_pct": settings.runner_profit_floor_pct,
+        }
+    stale_close_blocked, stale_close_reason = unresolved_stale_close_gate(broker)
+    if stale_close_blocked:
+        log.warning("scan skipped: %s", stale_close_reason)
+        funnel.emit_skip(reason="unresolved_stale_close_orders")
+        return {
+            "scan_id": "stale-close-hold",
+            "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
+            "watchlist_count": len(watchlist),
+            "submitted_count": 0,
+            "reconciled": n_reconciled,
+            "dominant_skip_reason": "unresolved_stale_close_orders",
+            "denied": [stale_close_reason],
+            "stale_close_entry_hold": True,
             "yfinance_confirm_1dte_enabled": settings.yfinance_confirm_1dte_enabled,
             "yfinance_confirm_min_dte": settings.yfinance_confirm_min_dte,
             "yfinance_strict_gate": settings.yfinance_strict_gate,

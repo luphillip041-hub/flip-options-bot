@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from flip_options_bot import daemon
 from flip_options_bot.config import Settings
@@ -15,6 +17,9 @@ from flip_options_bot.strategies.long_put import LongPutSignal
 class FakeBroker:
     def get_account(self):
         return {"equity": 10_000.0}
+
+    def list_open_orders_or_raise(self):
+        return []
 
 
 class FakeRisk:
@@ -59,7 +64,8 @@ class FakeScanner:
 
 
 class FakeFunnel:
-    pass
+    def emit_skip(self, reason: str):
+        self.reason = reason
 
 
 class FakeMonitor:
@@ -131,3 +137,40 @@ def test_rank_directional_candidates_prefers_target_dte_on_tie(tmp_path):
     ranked = daemon._rank_directional_candidates([farther, zero], settings)
 
     assert [s.symbol for s in ranked] == ["ZERO_DTE", "FARTHER_DTE"]
+
+
+def test_stale_pending_cancel_close_holds_new_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "is_market_open", lambda: True)
+    monkeypatch.setattr(daemon, "is_entry_window", lambda: True)
+
+    class BrokerWithStaleClose(FakeBroker):
+        def list_open_orders_or_raise(self):
+            return [
+                SimpleNamespace(
+                    client_order_id="close-stale",
+                    symbol="XLK260821C00192000",
+                    side="SELL",
+                    status="PENDING_CANCEL",
+                    submitted_at=datetime.now(UTC) - timedelta(hours=18),
+                )
+            ]
+
+    executor = FakeExecutor()
+
+    status = daemon.run_once(
+        settings=Settings(run_dir=tmp_path, max_positions=10, max_submissions_per_scan=2),
+        broker=BrokerWithStaleClose(),
+        journal=object(),
+        risk=FakeRisk(),
+        funnel=FakeFunnel(),
+        scanner=FakeScanner(tmp_path, [_call("SPY260817C00650000", 0.90)]),
+        executor=executor,
+        monitor=FakeMonitor(),
+        watchlist=["SPY"],
+    )
+
+    assert executor.submitted == []
+    assert status["submitted_count"] == 0
+    assert status["scan_id"] == "stale-close-hold"
+    assert status["stale_close_entry_hold"] is True
+    assert status["dominant_skip_reason"] == "unresolved_stale_close_orders"
