@@ -29,6 +29,7 @@ from .market_time import is_entry_window, is_market_open
 from .monitor.position_monitor import PositionMonitor
 from .risk import RiskEngine
 from .signal import FunnelRecorder
+from .signal.candidate_gate import load_scanner_candidate_gate
 from .signal.scanner import Scanner
 from .strategies import enabled_strategies
 from .strategies.long_call import LongCallSignal
@@ -154,6 +155,18 @@ def _rank_directional_candidates(
     return sorted(candidates, key=lambda sig: _candidate_quality_key(sig, settings), reverse=True)
 
 
+def _scanner_gate_config_telemetry(settings: Settings) -> dict[str, object]:
+    return {
+        "scanner_candidate_gate_enabled": settings.scanner_candidate_gate_enabled,
+        "scanner_candidate_gate_artifact_path": str(settings.scanner_candidate_artifact_path),
+        "scanner_candidate_gate_max_age_s": settings.scanner_candidate_max_age_s,
+        "scanner_candidate_gate_future_skew_s": settings.scanner_candidate_future_skew_s,
+        "scanner_candidate_gate_strict_outside_mixed_chop": (
+            settings.scanner_candidate_strict_outside_mixed_chop
+        ),
+    }
+
+
 def run_once(
     settings: Settings,
     broker: BrokerClient,
@@ -175,6 +188,7 @@ def run_once(
 
     if reconcile_only:
         return {
+            **_scanner_gate_config_telemetry(settings),
             "scan_id": "reconcile-only",
             "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
             "watchlist_count": len(watchlist),
@@ -203,6 +217,7 @@ def run_once(
         log.info("scan skipped: market closed")
         funnel.emit_skip(reason="market_closed")
         return {
+            **_scanner_gate_config_telemetry(settings),
             "scan_id": "market-closed",
             "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
             "watchlist_count": len(watchlist),
@@ -228,6 +243,7 @@ def run_once(
         log.info("scan skipped: outside entry window (09:45-15:45 ET)")
         funnel.emit_skip(reason="outside_entry_window")
         return {
+            **_scanner_gate_config_telemetry(settings),
             "scan_id": "outside-entry",
             "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
             "watchlist_count": len(watchlist),
@@ -254,6 +270,7 @@ def run_once(
         log.warning("scan skipped: %s", stale_close_reason)
         funnel.emit_skip(reason="unresolved_stale_close_orders")
         return {
+            **_scanner_gate_config_telemetry(settings),
             "scan_id": "stale-close-hold",
             "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
             "watchlist_count": len(watchlist),
@@ -277,7 +294,33 @@ def run_once(
             "runner_trailing_retention": settings.runner_trailing_retention,
             "runner_profit_floor_pct": settings.runner_profit_floor_pct,
         }
-    result = scanner.scan(watchlist)
+
+    candidate_gate = load_scanner_candidate_gate(settings)
+    if candidate_gate.required and not candidate_gate.usable:
+        log.warning("scan skipped: %s", candidate_gate.reason)
+        funnel.emit_skip(reason=candidate_gate.reason)
+        return {
+            **_scanner_gate_config_telemetry(settings),
+            **candidate_gate.telemetry(),
+            "scan_id": "scanner-gate-hold",
+            "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
+            "watchlist_count": len(watchlist),
+            "submitted_count": 0,
+            "reconciled": n_reconciled,
+            "dominant_skip_reason": candidate_gate.reason,
+            "denied": [candidate_gate.reason],
+            "tp_multiplier": settings.tp_multiplier,
+            "tp_full_multiplier": settings.tp_full_multiplier,
+            "trailing_arm_pct": settings.trailing_arm_pct,
+            "trailing_retention": settings.trailing_retention,
+            "profit_floor_pct": settings.profit_floor_pct,
+            "min_tp_profit_dollar": settings.min_tp_profit_dollar,
+            "runner_trailing_arm_pct": settings.runner_trailing_arm_pct,
+            "runner_trailing_retention": settings.runner_trailing_retention,
+            "runner_profit_floor_pct": settings.runner_profit_floor_pct,
+        }
+
+    result = scanner.scan(watchlist, candidate_gate=candidate_gate)
     log.info(
         "scan %s: watchlist=%d candidates=%d skip=%s",
         result.funnel_row.scan_id[:8],
@@ -289,7 +332,7 @@ def run_once(
     # Step 2b: BPCS scan (parallel, only if enabled)
     bpcs_result = None
     if settings.bpcs_enabled:
-        bpcs_result = scanner.scan_bpcs(watchlist)
+        bpcs_result = scanner.scan_bpcs(watchlist, candidate_gate=candidate_gate)
         log.info(
             "bpcs scan %s: candidates=%d skip=%s",
             bpcs_result.funnel_row.scan_id[:8],
@@ -357,7 +400,29 @@ def run_once(
                     log.warning("kill switch tripped — stopping scan cycle")
                     break
 
+    scanner_gate_denied_reasons: dict[str, int] = {}
+    funnel_rows = [result.funnel_row]
+    if bpcs_result is not None:
+        funnel_rows.append(bpcs_result.funnel_row)
+    for funnel_row in funnel_rows:
+        raw_denials = funnel_row.extras.get("scanner_candidate_gate_denied_reasons", {})
+        if isinstance(raw_denials, dict):
+            for reason, count in raw_denials.items():
+                if isinstance(reason, str) and isinstance(count, int):
+                    scanner_gate_denied_reasons[reason] = (
+                        scanner_gate_denied_reasons.get(reason, 0) + count
+                    )
+    dominant_skip_reason = result.funnel_row.dominant_skip_reason
+    if (
+        dominant_skip_reason == "no_candidates"
+        and bpcs_result is not None
+        and bpcs_result.funnel_row.dominant_skip_reason != "no_candidates"
+    ):
+        dominant_skip_reason = bpcs_result.funnel_row.dominant_skip_reason
+
     return {
+        **_scanner_gate_config_telemetry(settings),
+        **candidate_gate.telemetry(),
         "scan_id": result.funnel_row.scan_id,
         "strategies_enabled": [s.strategy_id for s in enabled_strategies(settings)],
         "watchlist_count": result.funnel_row.watchlist_count,
@@ -384,7 +449,9 @@ def run_once(
         "submitted_count": submitted,
         "reconciled": n_reconciled,
         "denied": reasons[:5],
-        "dominant_skip_reason": result.funnel_row.dominant_skip_reason,
+        "scanner_candidate_gate_denied_count": sum(scanner_gate_denied_reasons.values()),
+        "scanner_candidate_gate_denied_reasons": dict(sorted(scanner_gate_denied_reasons.items())),
+        "dominant_skip_reason": dominant_skip_reason,
     }
 
 
@@ -453,6 +520,13 @@ def main() -> int:
             settings.yfinance_confirm_min_dte,
             settings.yfinance_strict_gate,
             settings.yfinance_require_current_trade_date_for_volume_bonus,
+        )
+        log.info(
+            "  scanner_candidate_gate=%s path=%s max_age=%ss strict_outside_mixed=%s",
+            settings.scanner_candidate_gate_enabled,
+            settings.scanner_candidate_artifact_path,
+            settings.scanner_candidate_max_age_s,
+            settings.scanner_candidate_strict_outside_mixed_chop,
         )
         log.info("  strategies enabled: %s", [s.strategy_id for s in enabled_strategies(settings)])
         return 0

@@ -47,6 +47,13 @@ def test_is_market_open_weekend():
     assert is_market_open(utc_dt) is False
 
 
+def test_is_market_open_rejects_labor_day():
+    utc_dt = datetime(2026, 9, 7, 14, 0, 0, tzinfo=UTC)  # Labor Day 10:00 ET
+    assert is_weekday(utc_dt) is False
+    assert is_market_open(utc_dt) is False
+    assert is_entry_window(utc_dt) is False
+
+
 def test_is_entry_window_excludes_first_15_min():
     """09:35 ET — within market hours but outside entry window."""
     utc_dt = datetime(2026, 8, 11, 13, 35, 0, tzinfo=UTC)  # Tue 09:35 ET

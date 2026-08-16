@@ -30,6 +30,11 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
         "FOB_RUNNER_TRAILING_ARM_PCT",
         "FOB_RUNNER_TRAILING_RETENTION",
         "FOB_RUNNER_PROFIT_FLOOR_PCT",
+        "FOB_SCANNER_CANDIDATE_GATE_ENABLED",
+        "FOB_SCANNER_CANDIDATE_ARTIFACT_PATH",
+        "FOB_SCANNER_CANDIDATE_MAX_AGE_S",
+        "FOB_SCANNER_CANDIDATE_FUTURE_SKEW_S",
+        "FOB_SCANNER_CANDIDATE_STRICT_OUTSIDE_MIXED_CHOP",
     ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -49,6 +54,10 @@ def test_settings_defaults_when_no_env(tmp_path: Path, monkeypatch):
     assert settings.runner_trailing_arm_pct == 0.25
     assert settings.runner_trailing_retention == 0.50
     assert settings.runner_profit_floor_pct == 1.10
+    assert settings.scanner_candidate_gate_enabled is True
+    assert settings.scanner_candidate_max_age_s == 900
+    assert settings.scanner_candidate_future_skew_s == 5
+    assert settings.scanner_candidate_strict_outside_mixed_chop is False
 
 
 def test_settings_overrides_via_env(monkeypatch):
@@ -179,6 +188,41 @@ def test_yfinance_confirmation_env(monkeypatch, tmp_path: Path):
     assert settings.yfinance_bidask_bonus == 0.04
     assert settings.yfinance_volume_bonus == 0.015
     assert settings.yfinance_require_current_trade_date_for_volume_bonus is False
+
+
+def test_scanner_candidate_gate_env(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    artifact = tmp_path / "alpha.json"
+    monkeypatch.setenv("FOB_SCANNER_CANDIDATE_GATE_ENABLED", "false")
+    monkeypatch.setenv("FOB_SCANNER_CANDIDATE_ARTIFACT_PATH", str(artifact))
+    monkeypatch.setenv("FOB_SCANNER_CANDIDATE_MAX_AGE_S", "300")
+    monkeypatch.setenv("FOB_SCANNER_CANDIDATE_FUTURE_SKEW_S", "3")
+    monkeypatch.setenv("FOB_SCANNER_CANDIDATE_STRICT_OUTSIDE_MIXED_CHOP", "true")
+
+    settings = Settings.from_env()
+
+    assert settings.scanner_candidate_gate_enabled is False
+    assert settings.scanner_candidate_artifact_path == artifact
+    assert settings.scanner_candidate_max_age_s == 300
+    assert settings.scanner_candidate_future_skew_s == 3
+    assert settings.scanner_candidate_strict_outside_mixed_chop is True
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("FOB_SCANNER_CANDIDATE_MAX_AGE_S", "0"),
+        ("FOB_SCANNER_CANDIDATE_FUTURE_SKEW_S", "-1"),
+        ("FOB_SCANNER_CANDIDATE_ARTIFACT_PATH", ""),
+    ],
+)
+def test_scanner_candidate_gate_rejects_invalid_env(
+    monkeypatch, tmp_path: Path, key: str, value: str
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError):
+        Settings.from_env()
 
 
 def test_has_paper_creds(monkeypatch, tmp_path: Path):

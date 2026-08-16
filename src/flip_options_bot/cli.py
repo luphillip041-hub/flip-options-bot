@@ -30,6 +30,10 @@ def cmd_heartbeat(args) -> int:
     print(f"is_live_mode:   {settings.is_live()}")
     print(f"run_dir:        {settings.run_dir}")
     print(f"dashboard_port: {settings.dashboard_port}")
+    print(f"scanner_gate:   {settings.scanner_candidate_gate_enabled}")
+    print(f"scanner_path:   {settings.scanner_candidate_artifact_path}")
+    print(f"scanner_max_age:{settings.scanner_candidate_max_age_s}s")
+    print(f"scanner_strict: {settings.scanner_candidate_strict_outside_mixed_chop}")
     print(f"paper_creds:    {'set' if settings.has_paper_creds() else 'MISSING'}")
     print(f"live_creds:     {'set' if settings.has_live_creds() else 'MISSING'}")
     return 0

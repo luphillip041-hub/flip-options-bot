@@ -18,6 +18,9 @@ from dotenv import dotenv_values
 
 DEFAULT_RUN_DIR = Path("/root/flip/projects/flip-options-bot/runs")
 DEFAULT_DASHBOARD_PORT = 8100
+DEFAULT_SCANNER_CANDIDATE_ARTIFACT = Path(
+    "/root/flip/projects/flip-control-center/runs/alpha_scan_latest.json"
+)
 
 
 def _load_env_file() -> dict[str, str]:
@@ -100,6 +103,19 @@ class Settings:
     limit_fill_window_s: int = 60
     resubmit_cooldown_s: int = 120
     max_quote_age_s: int = 15
+
+    # ===== Control-center scanner candidate allow-list =====
+    # This is an additional gate on the existing entry path, never an order
+    # source. Mixed-chop requires a fresh same-session A/high-confidence
+    # scanner candidate. Other regimes preserve legacy behavior unless strict
+    # mode is explicitly enabled.
+    scanner_candidate_gate_enabled: bool = True
+    scanner_candidate_artifact_path: Path = field(
+        default_factory=lambda: DEFAULT_SCANNER_CANDIDATE_ARTIFACT
+    )
+    scanner_candidate_max_age_s: int = 900
+    scanner_candidate_future_skew_s: int = 5
+    scanner_candidate_strict_outside_mixed_chop: bool = False
 
     avoid_fomc: bool = True
     avoid_earnings: bool = True
@@ -239,6 +255,14 @@ class Settings:
 
     position_monitor_interval_s: int = 15
 
+    def __post_init__(self) -> None:
+        if self.scanner_candidate_max_age_s <= 0:
+            raise ValueError("scanner_candidate_max_age_s must be positive")
+        if self.scanner_candidate_future_skew_s < 0:
+            raise ValueError("scanner_candidate_future_skew_s must be non-negative")
+        if str(self.scanner_candidate_artifact_path).strip() in {"", "."}:
+            raise ValueError("scanner_candidate_artifact_path must name a file")
+
     def is_live(self) -> bool:
         """Live mode is double-gated: phase=live AND live_trade_enabled=true."""
         return self.phase == "live" and self.live_trade_enabled
@@ -256,6 +280,9 @@ class Settings:
         merged = {**file_env, **os.environ}
 
         run_dir_raw = merged.get("FOB_RUN_DIR", str(DEFAULT_RUN_DIR))
+        scanner_candidate_artifact_raw = merged.get(
+            "FOB_SCANNER_CANDIDATE_ARTIFACT_PATH", str(DEFAULT_SCANNER_CANDIDATE_ARTIFACT)
+        )
         return cls(
             phase=merged.get("FOB_PHASE", "paper"),  # type: ignore[arg-type]
             live_trade_enabled=_coerce_bool(merged, "LIVETRADE_ENABLED", False),
@@ -282,6 +309,17 @@ class Settings:
             limit_fill_window_s=_coerce_int(merged, "FOB_LIMIT_FILL_WINDOW_S", 60),
             resubmit_cooldown_s=_coerce_int(merged, "FOB_RESUBMIT_COOLDOWN_S", 120),
             max_quote_age_s=_coerce_int(merged, "FOB_MAX_QUOTE_AGE_S", 15),
+            scanner_candidate_gate_enabled=_coerce_bool(
+                merged, "FOB_SCANNER_CANDIDATE_GATE_ENABLED", True
+            ),
+            scanner_candidate_artifact_path=Path(scanner_candidate_artifact_raw),
+            scanner_candidate_max_age_s=_coerce_int(merged, "FOB_SCANNER_CANDIDATE_MAX_AGE_S", 900),
+            scanner_candidate_future_skew_s=_coerce_int(
+                merged, "FOB_SCANNER_CANDIDATE_FUTURE_SKEW_S", 5
+            ),
+            scanner_candidate_strict_outside_mixed_chop=_coerce_bool(
+                merged, "FOB_SCANNER_CANDIDATE_STRICT_OUTSIDE_MIXED_CHOP", False
+            ),
             avoid_fomc=_coerce_bool(merged, "FOB_AVOID_FOMC", True),
             avoid_earnings=_coerce_bool(merged, "FOB_AVOID_EARNINGS", True),
             earnings_otm_min_pct=_coerce_float(merged, "FOB_EARNINGS_OTM_MIN_PCT", 0.005),

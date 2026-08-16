@@ -10,7 +10,7 @@ No pytz dependency; we use the stdlib zoneinfo (added in Python 3.9).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")  # handles EST/EDT automatically
@@ -27,6 +27,63 @@ DEFAULT_ENTRY_OPEN_ET = time(9, 45)  # don't fire first 15 min of open
 DEFAULT_ENTRY_CLOSE_ET = time(15, 45)  # last 15 min too volatile
 
 
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> date:
+    first = date(year, month, 1)
+    return first + timedelta(days=(weekday - first.weekday()) % 7 + 7 * (nth - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    next_month = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    last = next_month - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _observed(day: date) -> date:
+    if day.weekday() == 5:
+        return day - timedelta(days=1)
+    if day.weekday() == 6:
+        return day + timedelta(days=1)
+    return day
+
+
+def _easter_sunday(year: int) -> date:
+    """Gregorian Easter (Meeus/Jones/Butcher), used for Good Friday."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    correction = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * correction) // 451
+    month = (h + correction - 7 * m + 114) // 31
+    day = (h + correction - 7 * m + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def market_holidays(year: int) -> frozenset[date]:
+    holidays = {
+        _observed(date(year, 1, 1)),
+        _nth_weekday(year, 1, 0, 3),
+        _nth_weekday(year, 2, 0, 3),
+        _easter_sunday(year) - timedelta(days=2),
+        _last_weekday(year, 5, 0),
+        _observed(date(year, 7, 4)),
+        _nth_weekday(year, 9, 0, 1),
+        _nth_weekday(year, 11, 3, 4),
+        _observed(date(year, 12, 25)),
+    }
+    if year >= 2022:
+        holidays.add(_observed(date(year, 6, 19)))
+    holidays.add(_observed(date(year + 1, 1, 1)))
+    return frozenset(day for day in holidays if day.year == year)
+
+
+def is_market_session_date(day: date) -> bool:
+    return day.weekday() < 5 and day not in market_holidays(day.year)
+
+
 def now_utc() -> datetime:
     """UTC-aware now."""
     return datetime.now(UTC)
@@ -38,15 +95,15 @@ def to_et(dt_utc: datetime) -> datetime:
 
 
 def is_weekday(dt_utc: datetime | None = None) -> bool:
-    """Mon-Fri in ET. Doesn't account for market holidays (NYSE/NASDAQ)."""
+    """True on a scheduled regular US equity session date."""
     d = to_et(dt_utc or now_utc())
-    return d.weekday() < 5
+    return is_market_session_date(d.date())
 
 
 def is_market_open(dt_utc: datetime | None = None) -> bool:
-    """True if regular-session market hours and a weekday."""
+    """True during scheduled regular-session market hours."""
     d = to_et(dt_utc or now_utc())
-    if d.weekday() >= 5:
+    if not is_market_session_date(d.date()):
         return False
     return MARKET_OPEN_ET <= d.time() < MARKET_CLOSE_ET
 
@@ -63,7 +120,7 @@ def is_entry_window(dt_utc: datetime | None = None) -> bool:
     The last 30 min (15:30-16:00) have gamma + spread issues — avoid.
     """
     d = to_et(dt_utc or now_utc())
-    if d.weekday() >= 5:
+    if not is_market_session_date(d.date()):
         return False
     t = d.time()
     # Morning window: 09:45 - 11:30 (includes ORB breakouts after 10:00 open)
@@ -98,15 +155,15 @@ def minutes_to_open(dt_utc: datetime | None = None) -> int:
         hour=MARKET_OPEN_ET.hour, minute=MARKET_OPEN_ET.minute, second=0, microsecond=0
     )
     now_t = d.time()
-    if MARKET_OPEN_ET <= now_t < MARKET_CLOSE_ET and d.weekday() < 5:
+    if MARKET_OPEN_ET <= now_t < MARKET_CLOSE_ET and is_market_session_date(d.date()):
         return -1
-    if now_t < MARKET_OPEN_ET and d.weekday() < 5:
+    if now_t < MARKET_OPEN_ET and is_market_session_date(d.date()):
         return int((open_today - d).total_seconds() / 60.0)
     # After close or weekend — next weekday morning
     days_ahead = 1
     while True:
         next_day = d + timedelta(days=days_ahead)
-        if next_day.weekday() < 5:
+        if is_market_session_date(next_day.date()):
             next_open = next_day.replace(
                 hour=MARKET_OPEN_ET.hour, minute=MARKET_OPEN_ET.minute, second=0, microsecond=0
             )

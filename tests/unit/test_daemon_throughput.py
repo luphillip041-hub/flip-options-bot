@@ -55,7 +55,7 @@ class FakeScanner:
         self.tmp_path = tmp_path
         self.candidates = candidates
 
-    def scan(self, watchlist):
+    def scan(self, watchlist, *, candidate_gate=None):
         row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
         row.raw_signal_count = len(self.candidates)
         row.sized_count = len(self.candidates)
@@ -102,6 +102,7 @@ def test_run_once_submits_best_candidates_before_watchlist_order(tmp_path, monke
         max_positions=10,
         max_submissions_per_scan=2,
         long_option_high_reward_mode=True,
+        scanner_candidate_gate_enabled=False,
     )
     candidates = [
         _call("LOW_C", 0.46),
@@ -139,6 +140,36 @@ def test_rank_directional_candidates_prefers_target_dte_on_tie(tmp_path):
     assert [s.symbol for s in ranked] == ["ZERO_DTE", "FARTHER_DTE"]
 
 
+def test_run_once_fails_closed_before_scanner_when_required_artifact_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "is_market_open", lambda: True)
+    monkeypatch.setattr(daemon, "is_entry_window", lambda: True)
+    executor = FakeExecutor()
+    funnel = FakeFunnel()
+
+    status = daemon.run_once(
+        settings=Settings(
+            run_dir=tmp_path,
+            scanner_candidate_artifact_path=tmp_path / "missing-alpha.json",
+        ),
+        broker=FakeBroker(),
+        journal=object(),
+        risk=FakeRisk(),
+        funnel=funnel,
+        scanner=FakeScanner(tmp_path, [_call("SPY260817C00650000", 0.90)]),
+        executor=executor,
+        monitor=FakeMonitor(),
+        watchlist=["SPY"],
+    )
+
+    assert executor.submitted == []
+    assert funnel.reason == "scanner_gate_artifact_missing"
+    assert status["scan_id"] == "scanner-gate-hold"
+    assert status["submitted_count"] == 0
+    assert status["scanner_candidate_gate_required"] is True
+    assert status["scanner_candidate_gate_usable"] is False
+    assert status["dominant_skip_reason"] == "scanner_gate_artifact_missing"
+
+
 def test_stale_pending_cancel_close_holds_new_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "is_market_open", lambda: True)
     monkeypatch.setattr(daemon, "is_entry_window", lambda: True)
@@ -158,7 +189,12 @@ def test_stale_pending_cancel_close_holds_new_entries(tmp_path, monkeypatch):
     executor = FakeExecutor()
 
     status = daemon.run_once(
-        settings=Settings(run_dir=tmp_path, max_positions=10, max_submissions_per_scan=2),
+        settings=Settings(
+            run_dir=tmp_path,
+            max_positions=10,
+            max_submissions_per_scan=2,
+            scanner_candidate_gate_enabled=False,
+        ),
         broker=BrokerWithStaleClose(),
         journal=object(),
         risk=FakeRisk(),

@@ -21,6 +21,7 @@ from ..broker import BrokerClient
 from ..config import Settings
 from ..data.yfinance_options import YFinanceOptionChainProvider, YFinanceOptionQuote
 from ..signal import FunnelRecorder, FunnelRow
+from ..signal.candidate_gate import ScannerCandidateGate
 from ..strategies.bull_put_credit import (
     BPCSFilters,
     BullPutSpreadSignal,
@@ -107,13 +108,20 @@ class Scanner:
         self.funnel = funnel
         self._yfinance_provider: YFinanceProvider | None = yfinance_provider
 
-    def scan(self, watchlist: list[str], target_dte: int | None = None) -> ScanResult:
+    def scan(
+        self,
+        watchlist: list[str],
+        target_dte: int | None = None,
+        *,
+        candidate_gate: ScannerCandidateGate | None = None,
+    ) -> ScanResult:
         """Run one scan over the watchlist. Emits a FunnelRow."""
         target_dte = target_dte or self.settings.target_dte
         filters = make_filters_from_settings(self.settings)
         row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
 
         candidates: list[LongCallSignal | LongPutSignal | LongEquitySignal] = []
+        gate_denials: dict[str, int] = {}
         now = datetime.now(UTC)
 
         for symbol in watchlist:
@@ -136,18 +144,24 @@ class Scanner:
                 row.chains_failed.append(symbol)
                 continue
             row.chains_fetched.append(symbol)
-            for s in signals:
-                candidates.append(s)
+            for signal in signals:
                 row.raw_signal_count += 1
+                if candidate_gate is not None:
+                    allowed, gate_reason = candidate_gate.allows(symbol, signal.strategy_id)
+                    if not allowed:
+                        gate_denials[gate_reason] = gate_denials.get(gate_reason, 0) + 1
+                        continue
+                candidates.append(signal)
 
         row.sized_count = len(candidates)
         row.submitted_count = 0  # decided by executor, not scanner
 
         # Conviction distribution for diagnostics
         row.conviction_distribution = [round(c.conviction, 3) for c in candidates]
+        self._add_candidate_gate_funnel_extras(row, candidate_gate, gate_denials)
 
         if not candidates:
-            row.dominant_skip_reason = "no_candidates"
+            row.dominant_skip_reason = self._dominant_gate_denial(gate_denials) or "no_candidates"
         else:
             row.dominant_skip_reason = "ok"
 
@@ -158,17 +172,23 @@ class Scanner:
 
         return ScanResult(funnel_row=row, candidates=candidates)
 
-    def scan_bpcs(self, watchlist: list[str]) -> BPCSScanResult:
+    def scan_bpcs(
+        self,
+        watchlist: list[str],
+        *,
+        candidate_gate: ScannerCandidateGate | None = None,
+    ) -> BPCSScanResult:
         """BPCS scan over the watchlist. Emits BullPutSpreadSignals.
 
-        Bull put credit spreads profit on NEUTRAL or DOWN moves. We scan
-        even when direction_move is negative — that's the whole point.
+        Bull put credit spreads profit on bullish or neutral moves. We scan
+        mildly negative noise, but reject a clearly bearish directional view.
         Returns 0 candidates if direction is strongly bearish or no
         credit spreads meet conviction threshold.
         """
         filters = make_bpcs_filters(self.settings)
         row = FunnelRecorder.new_row(watchlist_count=len(watchlist))
         candidates: list[BullPutSpreadSignal] = []
+        gate_denials: dict[str, int] = {}
         now = datetime.now(UTC)
 
         for symbol in watchlist:
@@ -179,15 +199,21 @@ class Scanner:
                 row.chains_failed.append(symbol)
                 continue
             row.chains_fetched.append(symbol)
-            for s in signals:
-                candidates.append(s)
+            for signal in signals:
                 row.raw_signal_count += 1
+                if candidate_gate is not None:
+                    allowed, gate_reason = candidate_gate.allows(symbol, signal.strategy_id)
+                    if not allowed:
+                        gate_denials[gate_reason] = gate_denials.get(gate_reason, 0) + 1
+                        continue
+                candidates.append(signal)
 
         row.sized_count = len(candidates)
         row.submitted_count = 0
         row.conviction_distribution = [round(c.conviction, 3) for c in candidates]
+        self._add_candidate_gate_funnel_extras(row, candidate_gate, gate_denials)
         if not candidates:
-            row.dominant_skip_reason = "no_candidates"
+            row.dominant_skip_reason = self._dominant_gate_denial(gate_denials) or "no_candidates"
         else:
             row.dominant_skip_reason = "ok"
 
@@ -195,6 +221,24 @@ class Scanner:
         if not emitted:
             log.warning("duplicate bpcs scan_id %s not re-emitted", row.scan_id)
         return BPCSScanResult(funnel_row=row, candidates=candidates)
+
+    @staticmethod
+    def _dominant_gate_denial(denials: dict[str, int]) -> str:
+        if not denials:
+            return ""
+        return sorted(denials, key=lambda reason: (-denials[reason], reason))[0]
+
+    @staticmethod
+    def _add_candidate_gate_funnel_extras(
+        row: FunnelRow,
+        candidate_gate: ScannerCandidateGate | None,
+        denials: dict[str, int],
+    ) -> None:
+        if candidate_gate is None:
+            return
+        row.extras.update(candidate_gate.telemetry())
+        row.extras["scanner_candidate_gate_denied_count"] = sum(denials.values())
+        row.extras["scanner_candidate_gate_denied_reasons"] = dict(sorted(denials.items()))
 
     def _scan_bpcs_symbol(
         self, symbol: str, filters: BPCSFilters, now: datetime
