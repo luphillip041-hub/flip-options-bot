@@ -46,6 +46,7 @@ runs/digest.log
 runs/record-day.log
 runs/*.log
 runs/*.db
+runs/_stale_cleanup/**
 
 # Credentials / keys
 *.pem

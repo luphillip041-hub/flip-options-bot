@@ -179,7 +179,6 @@ def _parse_candidates(
             or suggested < 0
             or not isinstance(no_trade_reason, str)
             or not isinstance(signal_id, str)
-            or not signal_id.startswith(f"{session_date}:")
             or not isinstance(intraday, dict)
             or not isinstance(option, dict)
             or not isinstance(sizing, dict)
@@ -194,6 +193,23 @@ def _parse_candidates(
             # or duplicate rows are ambiguous and must not broaden authorization.
             return None
         seen_symbols.add(normalized_symbol)
+        maybe_actionable = (
+            tier == "A"
+            and confidence == "high"
+            and quality == "actionable-watch"
+            and data_quality == "alpaca_confirmed_read_only"
+            and suggested > 0
+            and not no_trade_reason.strip()
+            and intraday.get("confirmed") is True
+        )
+        if not maybe_actionable:
+            # Watch-only rows are allowed to preserve stale/failed evidence for
+            # the UI, but they must never make the whole artifact unusable or
+            # authorize an entry. Strict execution checks below are reserved for
+            # rows that claim to be actionable.
+            continue
+        if not signal_id.startswith(f"{session_date}:"):
+            return None
         bar_asof = _parse_aware_datetime(intraday.get("bar_asof_utc"))
         quote_asof = _parse_aware_datetime(option.get("quote_asof_utc"))
         daily_source_session = intraday.get("daily_source_session")

@@ -220,6 +220,67 @@ def test_only_a_high_confidence_actionable_candidates_are_approved(tmp_path: Pat
         )
 
 
+def test_watch_only_stale_evidence_rows_do_not_malformed_entire_gate(tmp_path: Path):
+    artifact = tmp_path / "alpha.json"
+    watch_only = _approved_candidate("XLE", "bullish")
+    watch_only.update(
+        {
+            "signal_id": "2026-08-14:XLE:bullish:61.91",
+            "quality": "watch-only",
+            "data_quality": "watch_only_fail_closed",
+            "suggested_contracts": 0,
+            "no_trade_reason": "intraday confirmation failed; option quote missing or stale",
+        }
+    )
+    watch_only["intraday"] = {
+        **watch_only["intraday"],
+        "confirmed": False,
+        "reason": "sparse_intraday_minute_grid",
+        "checks": {},
+    }
+    watch_only["sizing"] = {**watch_only["sizing"], "suggested_contracts": 0}
+    _write_artifact(artifact, top=[watch_only])
+
+    gate = load_scanner_candidate_gate(_settings(tmp_path, artifact), now=NOW)
+
+    assert gate.required is True
+    assert gate.usable is True
+    assert gate.reason == "scanner_gate_ok"
+    assert gate.approved_count == 0
+    assert gate.allows("XLE", "long_call") == (
+        False,
+        "scanner_gate_candidate_not_approved",
+    )
+
+
+def test_actionable_row_still_approved_when_other_rows_are_watch_only(tmp_path: Path):
+    artifact = tmp_path / "alpha.json"
+    approved = _approved_candidate("SPY", "bullish")
+    watch_only = _approved_candidate("XLE", "bullish")
+    watch_only.update(
+        {
+            "signal_id": "2026-08-14:XLE:bullish:61.91",
+            "quality": "watch-only",
+            "data_quality": "watch_only_fail_closed",
+            "suggested_contracts": 0,
+            "no_trade_reason": "intraday confirmation failed",
+        }
+    )
+    watch_only["intraday"] = {**watch_only["intraday"], "confirmed": False, "checks": {}}
+    watch_only["sizing"] = {**watch_only["sizing"], "suggested_contracts": 0}
+    _write_artifact(artifact, top=[watch_only, approved])
+
+    gate = load_scanner_candidate_gate(_settings(tmp_path, artifact), now=NOW)
+
+    assert gate.usable is True
+    assert gate.approved_count == 1
+    assert gate.allows("SPY", "long_call") == (True, "scanner_gate_approved")
+    assert gate.allows("XLE", "long_call") == (
+        False,
+        "scanner_gate_candidate_not_approved",
+    )
+
+
 def test_scanner_filters_direction_before_funnel_emit(tmp_path: Path, monkeypatch):
     artifact = tmp_path / "alpha.json"
     _write_artifact(artifact, top=[_approved_candidate("SPY", "bullish")])
