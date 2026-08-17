@@ -117,6 +117,11 @@ class Settings:
     scanner_candidate_future_skew_s: int = 5
     scanner_candidate_strict_outside_mixed_chop: bool = False
 
+    # Aggressive paper-mode override: when false, stale prior-session close
+    # SELL orders are still monitored/repriced, but they do not hold fresh BUY
+    # entries. Paper-only/live-mode gates remain independent.
+    stale_close_entry_hold_enabled: bool = True
+
     avoid_fomc: bool = True
     avoid_earnings: bool = True
     earnings_otm_min_pct: float = 0.005
@@ -319,6 +324,9 @@ class Settings:
             ),
             scanner_candidate_strict_outside_mixed_chop=_coerce_bool(
                 merged, "FOB_SCANNER_CANDIDATE_STRICT_OUTSIDE_MIXED_CHOP", False
+            ),
+            stale_close_entry_hold_enabled=_coerce_bool(
+                merged, "FOB_STALE_CLOSE_ENTRY_HOLD_ENABLED", True
             ),
             avoid_fomc=_coerce_bool(merged, "FOB_AVOID_FOMC", True),
             avoid_earnings=_coerce_bool(merged, "FOB_AVOID_EARNINGS", True),

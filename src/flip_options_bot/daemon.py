@@ -164,6 +164,7 @@ def _scanner_gate_config_telemetry(settings: Settings) -> dict[str, object]:
         "scanner_candidate_gate_strict_outside_mixed_chop": (
             settings.scanner_candidate_strict_outside_mixed_chop
         ),
+        "stale_close_entry_hold_enabled": settings.stale_close_entry_hold_enabled,
     }
 
 
@@ -265,7 +266,11 @@ def run_once(
             "runner_trailing_retention": settings.runner_trailing_retention,
             "runner_profit_floor_pct": settings.runner_profit_floor_pct,
         }
-    stale_close_blocked, stale_close_reason = unresolved_stale_close_gate(broker)
+    stale_close_blocked, stale_close_reason = (
+        unresolved_stale_close_gate(broker)
+        if settings.stale_close_entry_hold_enabled
+        else (False, "stale_close_entry_hold_disabled")
+    )
     if stale_close_blocked:
         log.warning("scan skipped: %s", stale_close_reason)
         funnel.emit_skip(reason="unresolved_stale_close_orders")
